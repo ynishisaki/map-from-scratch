@@ -22,7 +22,25 @@ class MercatorCoordinate {
 
     return [x, y];
   }
+
+  static lngFromMercatorX(x) {
+    return x * 360 - 180;
+  }
+
+  static latFromMercatorY(y) {
+    const y2 = 180 - y * 360;
+    return (360 / Math.PI) * Math.atan(Math.exp((y2 * Math.PI) / 180)) - 90;
+  }
+
+  static fromXY(xy) {
+    let [x, y] = xy;
+    const lng = MercatorCoordinate.lngFromMercatorX((1 + x) / 2);
+    const lat = MercatorCoordinate.latFromMercatorY((1 - y) / 2);
+    return [lng, lat];
+  }
 }
+
+export default MercatorCoordinate;
 
 // test
 const lngLat: [number, number] = [139.6917, 35.6895]; // 東京の緯度経度
