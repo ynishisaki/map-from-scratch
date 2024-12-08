@@ -25,6 +25,7 @@ type CreateProgram = (
   vertexShader: WebGLShader,
   fragmentShader: WebGLShader
 ) => WebGLProgram | undefined;
+
 export const createProgram: CreateProgram = (
   gl,
   vertexShader,

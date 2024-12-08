@@ -6,13 +6,18 @@ const USA_BBOX = [
   [-60.1171875, 23.079731762449878],
   [-60.1171875, 50.233151832472245],
   [-126.03515625, 50.233151832472245],
+] satisfies [
+  [number, number],
+  [number, number],
+  [number, number],
+  [number, number]
 ];
 
 const vertexShaderSource = `
   attribute vec2 a_position;
   
   void main() {
-    gl_Position = vec4(a_position, 0, 1)
+    gl_Position = vec4(a_position, 0, 1);
   }
 `;
 
@@ -29,7 +34,7 @@ const run = (canvasId: string) => {
   if (!canvas) {
     throw new Error(`No canvas element with id ${canvasId}`);
   }
-  // canvas: HTMLCanvasElement
+
   const gl = canvas.getContext("webgl");
   if (!gl) {
     throw new Error("No WebGL context found");
@@ -58,36 +63,55 @@ const run = (canvasId: string) => {
 
   const positionBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+  const [nw_x, nw_y] = MercatorCoordinate.fromLngLat(USA_BBOX[0]);
+  const [ne_x, ne_y] = MercatorCoordinate.fromLngLat(USA_BBOX[1]);
+  const [se_x, se_y] = MercatorCoordinate.fromLngLat(USA_BBOX[2]);
+  const [sw_x, sw_y] = MercatorCoordinate.fromLngLat(USA_BBOX[3]);
+
+  const positions = [
+    nw_x,
+    nw_y,
+    ne_x,
+    ne_y,
+    se_x,
+    se_y,
+
+    se_x,
+    se_y,
+    sw_x,
+    sw_y,
+    nw_x,
+    nw_y,
+  ];
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+  const positionAttributeLocation = gl.getAttribLocation(program, "a_position");
+  gl.enableVertexAttribArray(positionAttributeLocation);
+
+  const draw = () => {
+    const size = 2;
+    const type = gl.FLOAT;
+    const normalize = false;
+    const stride = 0;
+    let offset = 0;
+    gl.vertexAttribPointer(
+      positionAttributeLocation,
+      size,
+      type,
+      normalize,
+      stride,
+      offset
+    );
+
+    const primitiveType = gl.TRIANGLES;
+    offset = 0;
+    const count = 6;
+    gl.drawArrays(primitiveType, offset, count);
+  };
+
+  draw();
 };
 
-const [nw_x, nw_y] = MercatorCoordinate.fromLngLat(USA_BBOX[0]);
-const [ne_x, ne_y] = MercatorCoordinate.fromLngLat(USA_BBOX[1]);
-const [se_x, se_y] = MercatorCoordinate.fromLngLat(USA_BBOX[2]);
-const [sw_x, sw_y] = MercatorCoordinate.fromLngLat(USA_BBOX[3]);
-
-const positions = [
-  // triangle 1
-  nw_x,
-  nw_y,
-  ne_x,
-  ne_y,
-  se_x,
-  se_y,
-
-  // triangle 2
-  se_x,
-  se_y,
-  sw_x,
-  sw_y,
-  nw_x,
-  nw_y,
-];
-
-console.log("positions", positions);
-
-// rendar vertices to a <canvas>
-
-// Get a WebGL context from out canvas element
-// Compile the shaders, and setup our program
-// Convert out lng/lat's to clip-space vertices
-// Tell WebGL to render the triangles
+// export default run;
+run("canvas");

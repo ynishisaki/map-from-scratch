@@ -12,7 +12,7 @@ class MercatorCoordinate {
     );
   }
 
-  static fromLngLat(lngLat) {
+  static fromLngLat(lngLat: [number, number]) {
     let x = MercatorCoordinate.mercatorXfromLng(lngLat[0]);
     let y = MercatorCoordinate.mercatorYfromLat(lngLat[1]);
 
@@ -23,16 +23,16 @@ class MercatorCoordinate {
     return [x, y];
   }
 
-  static lngFromMercatorX(x) {
+  static lngFromMercatorX(x: number) {
     return x * 360 - 180;
   }
 
-  static latFromMercatorY(y) {
+  static latFromMercatorY(y: number) {
     const y2 = 180 - y * 360;
     return (360 / Math.PI) * Math.atan(Math.exp((y2 * Math.PI) / 180)) - 90;
   }
 
-  static fromXY(xy) {
+  static fromXY(xy: [number, number]) {
     let [x, y] = xy;
     const lng = MercatorCoordinate.lngFromMercatorX((1 + x) / 2);
     const lat = MercatorCoordinate.latFromMercatorY((1 - y) / 2);
