@@ -41,8 +41,3 @@ class MercatorCoordinate {
 }
 
 export default MercatorCoordinate;
-
-// test
-const lngLat: [number, number] = [139.6917, 35.6895]; // 東京の緯度経度
-const mercatorXY = MercatorCoordinate.fromLngLat(lngLat);
-console.log(mercatorXY); // [0.5547547222222222, 0.3542760416666667]
