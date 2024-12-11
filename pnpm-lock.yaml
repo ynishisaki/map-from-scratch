@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      earcut:
+        specifier: ^3.0.0
+        version: 3.0.0
       gl-matrix:
         specifier: ^3.4.3
         version: 3.4.3
@@ -220,6 +223,9 @@ packages:
   deepmerge@4.3.1:
     resolution: {integrity: sha512-3sUqbMEc77XqpdNO7FRyRog+eW3ph+GYCbj+rK+uYyRMuwsVy0rMiVtPn+QJlKFvWP/1PYpapqYn0Me2knFn+A==}
     engines: {node: '>=0.10.0'}
+
+  earcut@3.0.0:
+    resolution: {integrity: sha512-41Fs7Q/PLq1SDbqjsgcY7GA42T0jvaCNGXgGtsNdvg+Yv8eIu06bxv4/PoREkZ9nMDNwnUSG9OFB9+yv8eKhDg==}
 
   eastasianwidth@0.2.0:
     resolution: {integrity: sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==}
@@ -601,6 +607,8 @@ snapshots:
       which: 2.0.2
 
   deepmerge@4.3.1: {}
+
+  earcut@3.0.0: {}
 
   eastasianwidth@0.2.0: {}
 
