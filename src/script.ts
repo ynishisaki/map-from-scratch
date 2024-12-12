@@ -1,22 +1,14 @@
+import earcut, { flatten } from "earcut";
+import { Polygon } from "geojson";
 import { mat3, vec3 } from "gl-matrix";
 import Hammer from "hammerjs";
-import MercatorCoordinate from "./mercator-coordinate";
 import { createProgram, createShader } from "./webgl-utils";
+
+import WASHINGTON from "../assets/washington";
+import MercatorCoordinate from "./mercator-coordinate";
 
 const MIN_ZOOM = 0;
 const MAX_ZOOM = 16;
-
-const USA_BBOX = [
-  [-126.03515625, 23.079731762449878],
-  [-60.1171875, 23.079731762449878],
-  [-60.1171875, 50.233151832472245],
-  [-126.03515625, 50.233151832472245],
-] satisfies [
-  [number, number],
-  [number, number],
-  [number, number],
-  [number, number]
-];
 
 const vertexShaderSource = `
   attribute vec2 a_position;
@@ -33,7 +25,7 @@ const fragmentShaderSource = `
   precision mediump float;
   
   void main() {
-    gl_FragColor = vec4(1, 0, 0.5, 0.5);
+    gl_FragColor = vec4(1, 0, 0.5, 0.9);
   }
 `;
 
@@ -42,6 +34,10 @@ const camera = {
   y: 0,
   zoom: 0,
 };
+
+camera.x = -0.6718187712249346;
+camera.y = 0.29662864586475735;
+camera.zoom = 5;
 
 let matrix: mat3;
 function updateMatrix() {
@@ -57,7 +53,6 @@ function updateMatrix() {
     mat3.create(),
     mat3.invert([] as unknown as mat3, cameraMat)
   );
-  console.log(matrix);
 }
 updateMatrix();
 
@@ -66,7 +61,10 @@ function getClipSpacePosition(
   e: any,
   canvas: HTMLCanvasElement
 ) {
-  const [x, y] = [e.center?.x || e.clientX, e.center?.y || e.clientY];
+  const [x, y] = [
+    e.center?.x || e.clientX, //
+    e.center?.y || e.clientY,
+  ];
 
   const rect = canvas.getBoundingClientRect();
   const cssX = x - rect.left;
@@ -79,6 +77,23 @@ function getClipSpacePosition(
   const clipY = normalizedY * -2 + 1;
 
   return [clipX, clipY];
+}
+
+function geometryToVertices(geometry: Polygon) {
+  const data = flatten(geometry.coordinates);
+  const triangles = earcut(data.vertices, data.holes, 2);
+  console.log("triangles", triangles);
+
+  const vertices = new Float32Array(triangles.length * 2);
+  for (let i = 0; i < triangles.length; i++) {
+    const point = triangles[i];
+    const lng = data.vertices[point * 2];
+    const lat = data.vertices[point * 2 + 1];
+    const [x, y] = MercatorCoordinate.fromLngLat([lng, lat]);
+    vertices[i * 2] = x;
+    vertices[i * 2 + 1] = y;
+  }
+  return vertices;
 }
 
 const run = (canvasId: string) => {
@@ -116,33 +131,13 @@ const run = (canvasId: string) => {
   const positionBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
 
-  const [nw_x, nw_y] = MercatorCoordinate.fromLngLat(USA_BBOX[0]);
-  const [ne_x, ne_y] = MercatorCoordinate.fromLngLat(USA_BBOX[1]);
-  const [se_x, se_y] = MercatorCoordinate.fromLngLat(USA_BBOX[2]);
-  const [sw_x, sw_y] = MercatorCoordinate.fromLngLat(USA_BBOX[3]);
-
-  const positions = [
-    nw_x,
-    nw_y,
-    ne_x,
-    ne_y,
-    se_x,
-    se_y,
-
-    se_x,
-    se_y,
-    sw_x,
-    sw_y,
-    nw_x,
-    nw_y,
-  ];
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+  const vertices = geometryToVertices(WASHINGTON);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
 
   const positionAttributeLocation = gl.getAttribLocation(program, "a_position");
   gl.enableVertexAttribArray(positionAttributeLocation);
 
   const draw = () => {
-    gl.clear(gl.COLOR_BUFFER_BIT);
     const matrixLocation = gl.getUniformLocation(program, "u_matrix");
     gl.uniformMatrix3fv(matrixLocation, false, matrix);
 
@@ -160,9 +155,9 @@ const run = (canvasId: string) => {
       offset
     );
 
-    const primitiveType = gl.TRIANGLES;
+    const primitiveType = gl.LINES;
     offset = 0;
-    const count = 6;
+    const count = vertices.length / 2;
     gl.drawArrays(primitiveType, offset, count);
   };
   draw();
