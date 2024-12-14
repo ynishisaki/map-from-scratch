@@ -1,11 +1,11 @@
 import earcut, { flatten } from "earcut";
-import { Polygon } from "geojson";
+import { Polygon, Position } from "geojson";
 import { mat3, vec3 } from "gl-matrix";
 import Hammer from "hammerjs";
+import MercatorCoordinate from "./mercator-coordinate";
 import { createProgram, createShader } from "./webgl-utils";
 
 import WASHINGTON from "../assets/washington";
-import MercatorCoordinate from "./mercator-coordinate";
 
 const MIN_ZOOM = 0;
 const MAX_ZOOM = 16;
@@ -25,7 +25,7 @@ const fragmentShaderSource = `
   precision mediump float;
   
   void main() {
-    gl_FragColor = vec4(1, 0, 0.5, 0.9);
+    gl_FragColor = vec4(1, 0, 0.5, 0.5);
   }
 `;
 
@@ -80,20 +80,43 @@ function getClipSpacePosition(
 }
 
 function geometryToVertices(geometry: Polygon) {
-  const data = flatten(geometry.coordinates);
-  const triangles = earcut(data.vertices, data.holes, 2);
-  console.log("triangles", triangles);
+  const verticesFromPolygon = (
+    coordinates: Position[][],
+    n?: number
+  ): Float32Array => {
+    const data = flatten(coordinates);
+    const triangles = earcut(data.vertices, data.holes, 2);
 
-  const vertices = new Float32Array(triangles.length * 2);
-  for (let i = 0; i < triangles.length; i++) {
-    const point = triangles[i];
-    const lng = data.vertices[point * 2];
-    const lat = data.vertices[point * 2 + 1];
-    const [x, y] = MercatorCoordinate.fromLngLat([lng, lat]);
-    vertices[i * 2] = x;
-    vertices[i * 2 + 1] = y;
+    const vertices = new Float32Array(triangles.length * 2);
+    for (let i = 0; i < triangles.length; i++) {
+      const point = triangles[i];
+      const lng = data.vertices[point * 2];
+      const lat = data.vertices[point * 2 + 1];
+      const [x, y] = MercatorCoordinate.fromLngLat([lng, lat]);
+      vertices[i * 2] = x;
+      vertices[i * 2 + 1] = y;
+    }
+    return vertices;
+  };
+
+  if (geometry.type === "Polygon") {
+    return verticesFromPolygon(geometry.coordinates);
   }
-  return vertices;
+
+  if (geometry.type === "MultiPolygon") {
+    const positions: Float32Array[] = [];
+    geometry.coordinates.forEach((polygon, i) => {
+      const coordinates = [[polygon[0]]];
+      const vertices = verticesFromPolygon(coordinates, i);
+
+      vertices.forEach((vertex) => {
+        positions[0][positions.length] = vertex;
+      });
+    });
+    return Float32Array.from(positions as any);
+  }
+
+  return new Float32Array();
 }
 
 const run = (canvasId: string) => {
@@ -155,7 +178,7 @@ const run = (canvasId: string) => {
       offset
     );
 
-    const primitiveType = gl.LINES;
+    const primitiveType = gl.TRIANGLES;
     offset = 0;
     const count = vertices.length / 2;
     gl.drawArrays(primitiveType, offset, count);
