@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@mapbox/tilebelt':
+        specifier: ^2.0.2
+        version: 2.0.2
       earcut:
         specifier: ^3.0.0
         version: 3.0.0
@@ -54,6 +57,9 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.0':
     resolution: {integrity: sha512-gv3ZRaISU3fjPAgNsriBRqGWQL6quFx04YMPW/zD8XMLsU32mhCCbfbO6KZFLjvYpCZ8zyDEgqsgf+PwPaM7GQ==}
+
+  '@mapbox/tilebelt@2.0.2':
+    resolution: {integrity: sha512-pzFgrmsCUjOAAeYns1MKJ1dJICYdEC+sYwtWLdxO7iJwmDlepGrEXDqP9ejApO/YUVctA/SYKDS4Oc0mBNNLZw==}
 
   '@rollup/plugin-commonjs@28.0.1':
     resolution: {integrity: sha512-+tNWdlWKbpB3WgBN7ijjYkq9X5uhjmcvyjEght4NmH5fAU++zfQzAJ6wumLS+dNcvwEZhKx2Z+skY8m7v0wGSA==}
@@ -489,6 +495,8 @@ snapshots:
       wrap-ansi-cjs: wrap-ansi@7.0.0
 
   '@jridgewell/sourcemap-codec@1.5.0': {}
+
+  '@mapbox/tilebelt@2.0.2': {}
 
   '@rollup/plugin-commonjs@28.0.1(rollup@4.28.1)':
     dependencies:
