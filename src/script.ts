@@ -42,7 +42,7 @@ const camera = {
 
 camera.x = -0.41101919888888894;
 camera.y = 0.2478952993354263;
-camera.zoom = 13;
+camera.zoom = 1;
 
 let canvas;
 let overlay: HTMLElement | null = null;
@@ -192,9 +192,7 @@ const run = (canvasId: string) => {
       gl.drawArrays(primitiveType, offset, count);
 
       // draw tile labels
-      const tileCoordinates = (
-        tilebelt.tileToGeoJSON(tile) as unknown as Feature<Polygon>
-      ).geometry.coordinates;
+      const tileCoordinates = (tilebelt.tileToGeoJSON(tile) as any).coordinates;
       const topLeft = tileCoordinates[0][0];
       const [x, y] = MercatorCoordinate.fromLngLat(topLeft as [number, number]);
 
@@ -208,8 +206,8 @@ const run = (canvasId: string) => {
       const wy = ((1 - clipY) / 2) * canvas.height;
       const div = document.createElement("div");
       div.className = "tile-label";
-      div.style.left = wx + 8 + "px";
-      div.style.top = wy + 8 + "px";
+      div.style.left = `${wx + 8}px`;
+      div.style.top = `${wy + 8}px`;
       div.style.position = "absolute";
       div.style.zIndex = "1000";
       div.appendChild(document.createTextNode(tile.join("/")));

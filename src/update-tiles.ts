@@ -2,7 +2,7 @@ import * as tilebelt from "@mapbox/tilebelt";
 import { VectorTile } from "@mapbox/vector-tile";
 import axios from "axios";
 import Protobuf from "pbf";
-import { LAYERS, MAX_TILE_ZOOM } from "./constants";
+import { LAYERS, MAX_TILE_ZOOM, TILE_URL } from "./constants";
 import geometryToVertices from "./geometry-to-vertices";
 import getBounds from "./get-bounds";
 
@@ -27,20 +27,20 @@ export default async function updateTiles(
   const tilesInView = getTilesInView(camera, canvas);
 
   const key = tilesInView.map((t) => t.join("/")).join(":");
+  console.log("key", key);
   if (tileKey !== key) {
     tileData = {};
 
     const tileReqs = tilesInView.map(async (tile) => {
       const [x, y, z] = tile;
 
-      const url = process.env.TILE_BASE_URL;
-      console.log("url", url);
-      const res = await axios.get(`${url}/${z}/${x}/${y}.pbf`, {
+      const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
         responseType: "arraybuffer",
       });
 
       const pbf = new Protobuf(res.data);
       const vectorTile = new VectorTile(pbf);
+      console.log("vectorTile", vectorTile);
 
       const layers: { [key: string]: Float32Array<ArrayBufferLike>[] } = {};
       Object.keys(LAYERS).forEach((layer) => {

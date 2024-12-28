@@ -2,11 +2,52 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="initial-scale=1.0" />
     <title>WebGL Demo</title>
+    <style>
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+    </style>
   </head>
   <body>
-    <canvas id="canvas" width="100vh" height="100vh"></canvas>
+    <div
+      id="canvas-wrapper"
+      style="position: relative; width: 100vw; height: 100vh; margin: 0"
+    >
+      <div
+        id="canvas-overlay"
+        style="
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          color: red;
+          overflow: hidden;
+        "
+      ></div>
+      <canvas
+        id="canvas"
+        style="
+          border: 1px solid black;
+          position: absolute;
+          top: 0px;
+          left: 0px;
+          touch-action: none;
+          user-select: none;
+          -webkit-user-drag: none;
+          -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+        "
+      ></canvas>
+    </div>
+
     <script src="./dist/bundle.mjs" type="module"></script>
   </body>
 </html>
