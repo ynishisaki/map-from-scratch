@@ -1,17 +1,14 @@
 import * as tilebelt from "@mapbox/tilebelt";
-import { Feature, Polygon } from "geojson";
 import { mat3, vec3 } from "gl-matrix";
 import Hammer from "hammerjs";
+import Stats from "stats.js";
 import atLimits from "./at-limites";
-import { LAYERS } from "./constants";
+import { LAYERS, MAX_ZOOM, MIN_ZOOM, TILE_SIZE } from "./constants";
 import geometryToVertices from "./geometry-to-vertices";
 import getClipSpacePosition from "./get-clip-space-position";
 import MercatorCoordinate from "./mercator-coordinate";
 import updateTiles from "./update-tiles";
 import { createProgram, createShader } from "./webgl-utils";
-
-const MIN_ZOOM = 0;
-const MAX_ZOOM = 16;
 
 const vertexShaderSource = `
   attribute vec2 a_position;
@@ -34,6 +31,8 @@ const fragmentShaderSource = `
   }
 `;
 
+let loopRunning = true;
+
 const camera = {
   x: 0,
   y: 0,
@@ -46,17 +45,26 @@ camera.zoom = 1;
 
 let canvas;
 let overlay: HTMLElement | null = null;
+let statsWidget: HTMLElement | null = null;
 
 // define update tilies
 
 let matrix: mat3;
-function updateMatrix() {
+function updateMatrix(
+  canvas: HTMLCanvasElement,
+  camera: { x: number; y: number; zoom: number }
+) {
   const cameraMat = mat3.create();
 
   mat3.translate(cameraMat, cameraMat, [camera.x, camera.y]);
 
   const zoomScale = 1 / Math.pow(2, camera.zoom);
-  mat3.scale(cameraMat, cameraMat, [zoomScale, zoomScale]);
+  const widthScale = TILE_SIZE / canvas.width;
+  const heightScale = TILE_SIZE / canvas.height;
+  mat3.scale(cameraMat, cameraMat, [
+    zoomScale / widthScale,
+    zoomScale / heightScale,
+  ]);
 
   matrix = mat3.multiply(
     [] as unknown as mat3,
@@ -65,7 +73,28 @@ function updateMatrix() {
   );
 }
 
-const run = (canvasId: string) => {
+let handlePan: (event: MouseEvent | HammerInput) => void;
+let handleZoom: (event: WheelEvent | HammerInput) => void;
+
+let timestamp: number;
+let slowCount: number;
+let frameStats: {
+  drawCalls: number;
+  vertices: number;
+  features: number;
+};
+
+const run = (
+  canvasId: string,
+  mobile: boolean = false,
+  abort: (() => void) | null = null
+) => {
+  loopRunning = true;
+  timestamp = 0;
+  slowCount = 0;
+
+  const stats = new Stats();
+
   const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
   if (!canvas) {
     throw new Error(`No canvas element with id ${canvasId}`);
@@ -78,7 +107,8 @@ const run = (canvasId: string) => {
 
   overlay = document.getElementById(`${canvasId}-overlay`);
 
-  updateMatrix();
+  updateMatrix(canvas, camera);
+  updateTiles(camera, canvas);
 
   gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 
@@ -102,13 +132,16 @@ const run = (canvasId: string) => {
   gl.useProgram(program);
 
   const draw = async () => {
+    frameStats = { drawCalls: 0, vertices: 0, features: 0 };
+    stats.begin();
+
+    const matrixLocation = gl.getUniformLocation(program, "u_matrix");
+    gl.uniformMatrix3fv(matrixLocation, false, matrix);
+
     const { tilesInView, tileData, tileKey } = await updateTiles(
       camera,
       canvas
     );
-
-    const matrixLocation = gl.getUniformLocation(program, "u_matrix");
-    gl.uniformMatrix3fv(matrixLocation, false, matrix);
 
     Object.keys(tileData).forEach((tile) => {
       Object.keys(LAYERS).forEach((layer) => {
@@ -120,6 +153,8 @@ const run = (canvasId: string) => {
         gl.uniform4fv(colorLocation, color);
 
         (features ?? []).forEach((feature) => {
+          frameStats.features++;
+
           const positionBuffer = gl.createBuffer();
           gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
           gl.bufferData(gl.ARRAY_BUFFER, feature, gl.STATIC_DRAW);
@@ -148,6 +183,9 @@ const run = (canvasId: string) => {
           offset = 0;
           const count = feature.length / 2;
           gl.drawArrays(primitiveType, offset, count);
+
+          frameStats.drawCalls++;
+          frameStats.vertices += feature.length;
         });
       });
     });
@@ -213,7 +251,38 @@ const run = (canvasId: string) => {
       div.appendChild(document.createTextNode(tile.join("/")));
       overlay?.appendChild(div);
     });
+
+    if (mobile) {
+      stop(canvas, statsWidget);
+      if (abort) {
+        abort();
+      }
+      return;
+    }
+
+    const now = performance.now();
+    const fps = 1 / ((now - timestamp) / 1000);
+    if (fps < 10) {
+      slowCount++;
+
+      if (slowCount > 5) {
+        console.warn(`Too slow. Killing loop for ${canvasId}.`);
+        stop(canvas, statsWidget);
+        if (abort) {
+          abort();
+        }
+      }
+    }
+    timestamp = now;
+
+    stats.end();
+    if (loopRunning) {
+      window.requestAnimationFrame(draw);
+    }
   };
+  // start loop
+  window.requestAnimationFrame(draw);
+
   draw();
 
   const hammer = new Hammer(canvas);
@@ -247,23 +316,23 @@ const run = (canvasId: string) => {
     camera.x += deltaX;
     camera.y += deltaY;
 
-    updateMatrix();
+    updateMatrix(canvas, camera);
 
     if (atLimits(camera, canvas)) {
       camera.x -= deltaX;
       camera.y -= deltaY;
-      updateMatrix();
+      updateMatrix(canvas, camera);
       return;
     }
 
     startX = x;
     startY = y;
 
-    updateMatrix();
-    draw();
+    updateMatrix(canvas, camera);
+    updateTiles(camera, canvas);
   };
 
-  const handlePan = (startEvent: MouseEvent | HammerInput) => {
+  handlePan = (startEvent: MouseEvent | HammerInput) => {
     [startX, startY] = getClipSpacePosition(startEvent, canvas);
     canvas.style.cursor = "grabbing";
 
@@ -283,7 +352,7 @@ const run = (canvasId: string) => {
   canvas.addEventListener("mousedown", handlePan);
   hammer.on("panstart", handlePan);
 
-  const handleZoom = (wheelEvent: WheelEvent | HammerInput) => {
+  handleZoom = (wheelEvent: WheelEvent | HammerInput) => {
     wheelEvent.preventDefault();
     const [x, y] = getClipSpacePosition(wheelEvent, canvas);
 
@@ -297,11 +366,11 @@ const run = (canvasId: string) => {
     const zoomDelta = -wheelEvent.deltaY * (1 / 500);
     camera.zoom += zoomDelta;
     camera.zoom = Math.max(MIN_ZOOM, Math.min(camera.zoom, MAX_ZOOM));
-    updateMatrix();
+    updateMatrix(canvas, camera);
 
     if (atLimits(camera, canvas)) {
       camera.zoom = prevZoom;
-      updateMatrix();
+      updateMatrix(canvas, camera);
       return;
     }
 
@@ -313,11 +382,38 @@ const run = (canvasId: string) => {
 
     camera.x += preZoomX - postZoomX;
     camera.y += preZoomY - postZoomY;
-    updateMatrix();
-    draw();
+    updateMatrix(canvas, camera);
+    updateTiles(camera, canvas);
   };
   canvas.addEventListener("wheel", handleZoom);
   hammer.on("pinch", handleZoom);
+
+  // setup stats widget
+  stats.showPanel(0);
+  statsWidget = stats.dom;
+  statsWidget.style.position = "absolute";
+  statsWidget.style.left = mobile ? "0" : "-100px";
+  statsWidget.style.zIndex = "0";
+  canvas.parentElement?.appendChild(statsWidget);
+};
+
+export const stop = (
+  canvas: HTMLCanvasElement | null,
+  statsWidget: HTMLElement | null
+) => {
+  loopRunning = false;
+
+  if (!canvas) return;
+  if (!statsWidget) return;
+
+  canvas.removeEventListener("wheel", handleZoom);
+  canvas.removeEventListener("mousedown", handlePan);
+  overlay?.replaceChildren();
+  statsWidget.remove();
+};
+
+export const getFrameStats = () => {
+  return frameStats;
 };
 
 // export default run;

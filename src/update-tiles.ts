@@ -31,7 +31,7 @@ export default async function updateTiles(
   if (tileKey !== key) {
     tileData = {};
 
-    const tileReqs = tilesInView.map(async (tile) => {
+    tilesInView.forEach(async (tile) => {
       const [x, y, z] = tile;
 
       const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
@@ -63,8 +63,6 @@ export default async function updateTiles(
       });
       tileData[tile.join(".")] = layers;
     });
-
-    await Promise.all(tileReqs);
     tileKey = key;
   }
 

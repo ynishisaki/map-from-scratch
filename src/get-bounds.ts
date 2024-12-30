@@ -30,10 +30,10 @@ export default function getBounds(camera: Camera, canvas: HTMLCanvasElement) {
   y2 = y2 / zoomScale / TILE_SIZE;
 
   const bbox = [
-    MercatorCoordinate.lngFromMercatorX(x1), // left
-    MercatorCoordinate.latFromMercatorY(y1), // bottom
-    MercatorCoordinate.lngFromMercatorX(x2), // right
-    MercatorCoordinate.latFromMercatorY(y2), // top
+    Math.max(MercatorCoordinate.lngFromMercatorX(x1), -180), // left
+    Math.max(MercatorCoordinate.latFromMercatorY(y1), -85.05), // bottom
+    Math.max(MercatorCoordinate.lngFromMercatorX(x2), 180), // right
+    Math.max(MercatorCoordinate.latFromMercatorY(y2), 85.05), // top
   ];
 
   return bbox;
