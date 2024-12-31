@@ -6,8 +6,8 @@ type Camera = {
   zoom: number;
 };
 
-export default function atLimits(camera: Camera, canvas: HTMLCanvasElement) {
-  const bbox = getBounds(camera, canvas);
+export default function atLimits(canvas: HTMLCanvasElement, camera: Camera) {
+  const bbox = getBounds(canvas, camera);
   return (
     bbox[0] === -180 ||
     bbox[1] === -85.05 ||

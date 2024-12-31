@@ -10,6 +10,14 @@ import MercatorCoordinate from "./mercator-coordinate";
 import updateTiles from "./update-tiles";
 import { createProgram, createShader } from "./webgl-utils";
 
+let tileKey: string = "";
+let tilesInView: tilebelt.Tile[] = [];
+let tileData: {
+  [key: string]: {
+    [key: string]: Float32Array[];
+  };
+} = {};
+
 const vertexShaderSource = `
   attribute vec2 a_position;
   
@@ -43,11 +51,9 @@ camera.x = -0.41101919888888894;
 camera.y = 0.2478952993354263;
 camera.zoom = 1;
 
-let canvas;
+let canvas: HTMLCanvasElement | null = null;
 let overlay: HTMLElement | null = null;
 let statsWidget: HTMLElement | null = null;
-
-// define update tilies
 
 let matrix: mat3;
 function updateMatrix(
@@ -56,6 +62,7 @@ function updateMatrix(
 ) {
   const cameraMat = mat3.create();
 
+  console.log("camera", camera.x, camera.y, camera.zoom);
   mat3.translate(cameraMat, cameraMat, [camera.x, camera.y]);
 
   const zoomScale = 1 / Math.pow(2, camera.zoom);
@@ -84,7 +91,7 @@ let frameStats: {
   features: number;
 };
 
-const run = (
+const run = async (
   canvasId: string,
   mobile: boolean = false,
   abort: (() => void) | null = null
@@ -95,7 +102,7 @@ const run = (
 
   const stats = new Stats();
 
-  const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+  canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
   if (!canvas) {
     throw new Error(`No canvas element with id ${canvasId}`);
   }
@@ -108,7 +115,7 @@ const run = (
   overlay = document.getElementById(`${canvasId}-overlay`);
 
   updateMatrix(canvas, camera);
-  updateTiles(camera, canvas);
+  ({ tilesInView, tileData, tileKey } = await updateTiles(canvas, camera));
 
   gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 
@@ -131,17 +138,18 @@ const run = (
   gl.clearColor(0, 0, 0, 0);
   gl.useProgram(program);
 
+  const positionBuffer = gl.createBuffer();
+
   const draw = async () => {
+    if (!canvas) return;
+
     frameStats = { drawCalls: 0, vertices: 0, features: 0 };
     stats.begin();
 
     const matrixLocation = gl.getUniformLocation(program, "u_matrix");
     gl.uniformMatrix3fv(matrixLocation, false, matrix);
 
-    const { tilesInView, tileData, tileKey } = await updateTiles(
-      camera,
-      canvas
-    );
+    ({ tilesInView, tileData, tileKey } = await updateTiles(canvas, camera));
 
     Object.keys(tileData).forEach((tile) => {
       Object.keys(LAYERS).forEach((layer) => {
@@ -155,7 +163,6 @@ const run = (
         (features ?? []).forEach((feature) => {
           frameStats.features++;
 
-          const positionBuffer = gl.createBuffer();
           gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
           gl.bufferData(gl.ARRAY_BUFFER, feature, gl.STATIC_DRAW);
 
@@ -193,10 +200,12 @@ const run = (
     overlay?.replaceChildren();
 
     tilesInView.forEach((tile) => {
+      if (!canvas) return;
+
       const colorLocation = gl.getUniformLocation(program, "u_color");
       gl.uniform4fv(colorLocation, [1, 0, 0, 1]);
 
-      const positionBuffer = gl.createBuffer();
+      // const positionBuffer = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
 
       const tileVertices = geometryToVertices(tilebelt.tileToGeoJSON(tile));
@@ -283,8 +292,6 @@ const run = (
   // start loop
   window.requestAnimationFrame(draw);
 
-  draw();
-
   const hammer = new Hammer(canvas);
   hammer.get("pan").set({ direction: Hammer.DIRECTION_ALL });
   hammer.get("pinch").set({ enable: true });
@@ -292,7 +299,9 @@ const run = (
   let startX: number;
   let startY: number;
 
-  const handleMove = (moveEvent: MouseEvent | HammerInput) => {
+  const handleMove = async (moveEvent: MouseEvent | HammerInput) => {
+    if (!canvas) return;
+
     const [x, y] = getClipSpacePosition(moveEvent, canvas);
 
     const [preX, preY] = vec3.transformMat3(
@@ -318,7 +327,7 @@ const run = (
 
     updateMatrix(canvas, camera);
 
-    if (atLimits(camera, canvas)) {
+    if (atLimits(canvas, camera)) {
       camera.x -= deltaX;
       camera.y -= deltaY;
       updateMatrix(canvas, camera);
@@ -329,10 +338,12 @@ const run = (
     startY = y;
 
     updateMatrix(canvas, camera);
-    updateTiles(camera, canvas);
+    ({ tilesInView, tileData, tileKey } = await updateTiles(canvas, camera));
   };
 
   handlePan = (startEvent: MouseEvent | HammerInput) => {
+    if (!canvas) return;
+
     [startX, startY] = getClipSpacePosition(startEvent, canvas);
     canvas.style.cursor = "grabbing";
 
@@ -340,6 +351,8 @@ const run = (
     hammer.on("pan", handleMove);
 
     const clear = (event: MouseEvent | HammerInput) => {
+      if (!canvas) return;
+
       canvas.style.cursor = "grab";
       window.removeEventListener("mousemove", handleMove);
       window.removeEventListener("mouseup", clear);
@@ -352,7 +365,9 @@ const run = (
   canvas.addEventListener("mousedown", handlePan);
   hammer.on("panstart", handlePan);
 
-  handleZoom = (wheelEvent: WheelEvent | HammerInput) => {
+  handleZoom = async (wheelEvent: WheelEvent | HammerInput) => {
+    if (!canvas) return;
+
     wheelEvent.preventDefault();
     const [x, y] = getClipSpacePosition(wheelEvent, canvas);
 
@@ -368,7 +383,7 @@ const run = (
     camera.zoom = Math.max(MIN_ZOOM, Math.min(camera.zoom, MAX_ZOOM));
     updateMatrix(canvas, camera);
 
-    if (atLimits(camera, canvas)) {
+    if (atLimits(canvas, camera)) {
       camera.zoom = prevZoom;
       updateMatrix(canvas, camera);
       return;
@@ -383,7 +398,7 @@ const run = (
     camera.x += preZoomX - postZoomX;
     camera.y += preZoomY - postZoomY;
     updateMatrix(canvas, camera);
-    updateTiles(camera, canvas);
+    ({ tilesInView, tileData, tileKey } = await updateTiles(canvas, camera));
   };
   canvas.addEventListener("wheel", handleZoom);
   hammer.on("pinch", handleZoom);
@@ -392,7 +407,7 @@ const run = (
   stats.showPanel(0);
   statsWidget = stats.dom;
   statsWidget.style.position = "absolute";
-  statsWidget.style.left = mobile ? "0" : "-100px";
+  // statsWidget.style.left = mobile ? "0" : "-100px";
   statsWidget.style.zIndex = "0";
   canvas.parentElement?.appendChild(statsWidget);
 };
@@ -417,4 +432,4 @@ export const getFrameStats = () => {
 };
 
 // export default run;
-run("canvas");
+run("canvas", false, () => {});

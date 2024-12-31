@@ -7,7 +7,7 @@ type Camera = {
   zoom: number;
 };
 
-export default function getBounds(camera: Camera, canvas: HTMLCanvasElement) {
+export default function getBounds(canvas: HTMLCanvasElement, camera: Camera) {
   const zoomScale = Math.pow(2, camera.zoom);
 
   const px = (1 + camera.x) / 2;

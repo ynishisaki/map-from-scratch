@@ -21,12 +21,12 @@ let tileData: {
 } = {};
 
 export default async function updateTiles(
-  camera: Camera,
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement,
+  camera: Camera
 ) {
-  const tilesInView = getTilesInView(camera, canvas);
+  const tilesInView = getTilesInView(canvas, camera);
 
-  const key = tilesInView.map((t) => t.join("/")).join(":");
+  const key = tilesInView.map((t) => t.join("/")).join(";");
   console.log("key", key);
   if (tileKey !== key) {
     tileData = {};
@@ -34,13 +34,13 @@ export default async function updateTiles(
     tilesInView.forEach(async (tile) => {
       const [x, y, z] = tile;
 
+      const reqStart = Date.now();
       const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
         responseType: "arraybuffer",
       });
 
       const pbf = new Protobuf(res.data);
       const vectorTile = new VectorTile(pbf);
-      console.log("vectorTile", vectorTile);
 
       const layers: { [key: string]: Float32Array<ArrayBufferLike>[] } = {};
       Object.keys(LAYERS).forEach((layer) => {
@@ -61,7 +61,7 @@ export default async function updateTiles(
           layers[layer] = features;
         }
       });
-      tileData[tile.join(".")] = layers;
+      tileData[tile.join("/")] = layers;
     });
     tileKey = key;
   }
@@ -73,8 +73,8 @@ export default async function updateTiles(
   };
 }
 
-function getTilesInView(camera: Camera, canvas: HTMLCanvasElement) {
-  const bbox = getBounds(camera, canvas);
+function getTilesInView(canvas: HTMLCanvasElement, camera: Camera) {
+  const bbox = getBounds(canvas, camera);
 
   const z = Math.min(Math.trunc(camera.zoom), MAX_TILE_ZOOM);
   const minTile = tilebelt.pointToTile(bbox[0], bbox[3], z); // top-left
