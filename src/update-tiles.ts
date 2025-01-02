@@ -13,16 +13,15 @@ type Camera = {
 };
 
 let tileKey: string = "";
-let tilesInView = [];
-let tileData: {
-  [key: string]: {
-    [key: string]: Float32Array[];
-  };
-} = {};
 
 export default async function updateTiles(
   canvas: HTMLCanvasElement,
-  camera: Camera
+  camera: Camera,
+  tileData: {
+    [key: string]: {
+      [key: string]: Float32Array[];
+    };
+  }
 ) {
   const tilesInView = getTilesInView(canvas, camera);
 

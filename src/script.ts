@@ -7,16 +7,9 @@ import { LAYERS, MAX_ZOOM, MIN_ZOOM, TILE_SIZE } from "./constants";
 import geometryToVertices from "./geometry-to-vertices";
 import getClipSpacePosition from "./get-clip-space-position";
 import MercatorCoordinate from "./mercator-coordinate";
+import StateManager from "./StateManager";
 import updateTiles from "./update-tiles";
 import { createProgram, createShader } from "./webgl-utils";
-
-let tileKey: string = "";
-let tilesInView: tilebelt.Tile[] = [];
-let tileData: {
-  [key: string]: {
-    [key: string]: Float32Array[];
-  };
-} = {};
 
 const vertexShaderSource = `
   attribute vec2 a_position;
@@ -41,28 +34,23 @@ const fragmentShaderSource = `
 
 let loopRunning = true;
 
-const camera = {
-  x: 0,
-  y: 0,
-  zoom: 0,
-};
-
-camera.x = -0.41101919888888894;
-camera.y = 0.2478952993354263;
-camera.zoom = 1;
-
 let canvas: HTMLCanvasElement | null = null;
 let overlay: HTMLElement | null = null;
 let statsWidget: HTMLElement | null = null;
 
+const stateManager = new StateManager();
+
+stateManager.setCamera(-0.41101919888888894, 0.2478952993354263, 1);
+
+stateManager.setTileKey("");
+stateManager.setTilesInView([]);
+stateManager.setTileData({});
+
 let matrix: mat3;
-function updateMatrix(
-  canvas: HTMLCanvasElement,
-  camera: { x: number; y: number; zoom: number }
-) {
+function updateMatrix(canvas: HTMLCanvasElement) {
   const cameraMat = mat3.create();
 
-  console.log("camera", camera.x, camera.y, camera.zoom);
+  const camera = stateManager.getCamera();
   mat3.translate(cameraMat, cameraMat, [camera.x, camera.y]);
 
   const zoomScale = 1 / Math.pow(2, camera.zoom);
@@ -114,8 +102,12 @@ const run = async (
 
   overlay = document.getElementById(`${canvasId}-overlay`);
 
-  updateMatrix(canvas, camera);
-  ({ tilesInView, tileData, tileKey } = await updateTiles(canvas, camera));
+  const camera = stateManager.getCamera();
+  updateMatrix(canvas);
+
+  const tileData = stateManager.getTileData();
+  const { tileData: newTileData } = await updateTiles(canvas, camera, tileData);
+  stateManager.setTileData(newTileData);
 
   gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 
@@ -149,7 +141,13 @@ const run = async (
     const matrixLocation = gl.getUniformLocation(program, "u_matrix");
     gl.uniformMatrix3fv(matrixLocation, false, matrix);
 
-    ({ tilesInView, tileData, tileKey } = await updateTiles(canvas, camera));
+    const tileData = stateManager.getTileData();
+    const { tilesInView, tileData: newTileData } = await updateTiles(
+      canvas,
+      camera,
+      tileData
+    );
+    stateManager.setTileData(newTileData);
 
     Object.keys(tileData).forEach((tile) => {
       Object.keys(LAYERS).forEach((layer) => {
@@ -205,7 +203,6 @@ const run = async (
       const colorLocation = gl.getUniformLocation(program, "u_color");
       gl.uniform4fv(colorLocation, [1, 0, 0, 1]);
 
-      // const positionBuffer = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
 
       const tileVertices = geometryToVertices(tilebelt.tileToGeoJSON(tile));
@@ -217,7 +214,6 @@ const run = async (
       );
       gl.enableVertexAttribArray(positionAttributeLocation);
 
-      // tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
       const size = 2;
       const type = gl.FLOAT;
       const normalize = false;
@@ -322,23 +318,29 @@ const run = async (
       return;
     }
 
-    camera.x += deltaX;
-    camera.y += deltaY;
+    const camera = stateManager.getCamera();
+    stateManager.setCamera(camera.x + deltaX, camera.y + deltaY, camera.zoom);
 
-    updateMatrix(canvas, camera);
+    updateMatrix(canvas);
 
     if (atLimits(canvas, camera)) {
-      camera.x -= deltaX;
-      camera.y -= deltaY;
-      updateMatrix(canvas, camera);
+      stateManager.setCamera(camera.x - deltaX, camera.y - deltaY, camera.zoom);
+      updateMatrix(canvas);
       return;
     }
 
     startX = x;
     startY = y;
 
-    updateMatrix(canvas, camera);
-    ({ tilesInView, tileData, tileKey } = await updateTiles(canvas, camera));
+    updateMatrix(canvas);
+
+    const tileData = stateManager.getTileData();
+    const { tileData: newTileData } = await updateTiles(
+      canvas,
+      camera,
+      tileData
+    );
+    stateManager.setTileData(newTileData);
   };
 
   handlePan = (startEvent: MouseEvent | HammerInput) => {
@@ -377,15 +379,21 @@ const run = async (
       mat3.invert([] as unknown as mat3, matrix)
     );
 
+    const camera = stateManager.getCamera();
+
     const prevZoom = camera.zoom;
     const zoomDelta = -wheelEvent.deltaY * (1 / 500);
-    camera.zoom += zoomDelta;
-    camera.zoom = Math.max(MIN_ZOOM, Math.min(camera.zoom, MAX_ZOOM));
-    updateMatrix(canvas, camera);
+    stateManager.setCamera(camera.x, camera.y, camera.zoom + zoomDelta);
+    stateManager.setCamera(
+      camera.x,
+      camera.y,
+      Math.max(MIN_ZOOM, Math.min(camera.zoom, MAX_ZOOM))
+    );
+    updateMatrix(canvas);
 
     if (atLimits(canvas, camera)) {
-      camera.zoom = prevZoom;
-      updateMatrix(canvas, camera);
+      stateManager.setCamera(camera.x, camera.y, prevZoom);
+      updateMatrix(canvas);
       return;
     }
 
@@ -395,10 +403,20 @@ const run = async (
       mat3.invert([] as unknown as mat3, matrix)
     );
 
-    camera.x += preZoomX - postZoomX;
-    camera.y += preZoomY - postZoomY;
-    updateMatrix(canvas, camera);
-    ({ tilesInView, tileData, tileKey } = await updateTiles(canvas, camera));
+    stateManager.setCamera(
+      camera.x + preZoomX - postZoomX,
+      camera.y + preZoomY - postZoomY,
+      camera.zoom
+    );
+    updateMatrix(canvas);
+
+    const tileData = stateManager.getTileData();
+    const { tileData: newTileData } = await updateTiles(
+      canvas,
+      camera,
+      tileData
+    );
+    stateManager.setTileData(newTileData);
   };
   canvas.addEventListener("wheel", handleZoom);
   hammer.on("pinch", handleZoom);
