@@ -40,9 +40,12 @@ let statsWidget: HTMLElement | null = null;
 
 const stateManager = new StateManager();
 
-stateManager.setCamera(-0.41101919888888894, 0.2478952993354263, 1);
+stateManager.setCamera({
+  x: -0.41101919888888894,
+  y: 0.2478952993354263,
+  zoom: 1,
+});
 
-stateManager.setTileKey("");
 stateManager.setTilesInView([]);
 stateManager.setTileData({});
 
@@ -150,19 +153,20 @@ const run = async (
     stateManager.setTileData(newTileData);
 
     Object.keys(tileData).forEach((tile) => {
-      Object.keys(LAYERS).forEach((layer) => {
-        const features = tileData[tile][layer] ?? [];
-        // RGBA to WebGL color
-        const color = LAYERS[layer as keyof typeof LAYERS].map((n) => n / 255);
+      (tileData[tile] as any[]).forEach((tileLayer) => {
+        const { layer, vertices } = tileLayer;
 
-        const colorLocation = gl.getUniformLocation(program, "u_color");
-        gl.uniform4fv(colorLocation, color);
+        if (LAYERS[layer as keyof typeof LAYERS]) {
+          // RGBA to WebGL color
+          const color = LAYERS[layer as keyof typeof LAYERS].map(
+            (n) => n / 255
+          );
 
-        (features ?? []).forEach((feature) => {
-          frameStats.features++;
+          const colorLocation = gl.getUniformLocation(program, "u_color");
+          gl.uniform4fv(colorLocation, color);
 
           gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-          gl.bufferData(gl.ARRAY_BUFFER, feature, gl.STATIC_DRAW);
+          gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
           const positionAttributeLocation = gl.getAttribLocation(
             program,
@@ -186,12 +190,12 @@ const run = async (
 
           const primitiveType = gl.TRIANGLES;
           offset = 0;
-          const count = feature.length / 2;
+          const count = vertices.length / 2;
           gl.drawArrays(primitiveType, offset, count);
 
           frameStats.drawCalls++;
-          frameStats.vertices += feature.length;
-        });
+          frameStats.vertices += vertices.length;
+        }
       });
     });
 
@@ -319,12 +323,16 @@ const run = async (
     }
 
     const camera = stateManager.getCamera();
-    stateManager.setCamera(camera.x + deltaX, camera.y + deltaY, camera.zoom);
+    camera.x += deltaX;
+    camera.y += deltaY;
+    stateManager.setCamera(camera);
 
     updateMatrix(canvas);
 
     if (atLimits(canvas, camera)) {
-      stateManager.setCamera(camera.x - deltaX, camera.y - deltaY, camera.zoom);
+      camera.x -= deltaX;
+      camera.y -= deltaY;
+      stateManager.setCamera(camera);
       updateMatrix(canvas);
       return;
     }
@@ -383,16 +391,14 @@ const run = async (
 
     const prevZoom = camera.zoom;
     const zoomDelta = -wheelEvent.deltaY * (1 / 500);
-    stateManager.setCamera(camera.x, camera.y, camera.zoom + zoomDelta);
-    stateManager.setCamera(
-      camera.x,
-      camera.y,
-      Math.max(MIN_ZOOM, Math.min(camera.zoom, MAX_ZOOM))
-    );
+    camera.zoom += zoomDelta;
+    camera.zoom = Math.max(MIN_ZOOM, Math.min(camera.zoom, MAX_ZOOM));
+    stateManager.setCamera(camera);
     updateMatrix(canvas);
 
     if (atLimits(canvas, camera)) {
-      stateManager.setCamera(camera.x, camera.y, prevZoom);
+      camera.zoom = prevZoom;
+      stateManager.setCamera(camera);
       updateMatrix(canvas);
       return;
     }
@@ -403,11 +409,9 @@ const run = async (
       mat3.invert([] as unknown as mat3, matrix)
     );
 
-    stateManager.setCamera(
-      camera.x + preZoomX - postZoomX,
-      camera.y + preZoomY - postZoomY,
-      camera.zoom
-    );
+    camera.x += preZoomX - postZoomX;
+    camera.y += preZoomY - postZoomY;
+    stateManager.setCamera(camera);
     updateMatrix(canvas);
 
     const tileData = stateManager.getTileData();

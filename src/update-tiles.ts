@@ -5,23 +5,14 @@ import Protobuf from "pbf";
 import { LAYERS, MAX_TILE_ZOOM, TILE_URL } from "./constants";
 import geometryToVertices from "./geometry-to-vertices";
 import getBounds from "./get-bounds";
-
-type Camera = {
-  x: number;
-  y: number;
-  zoom: number;
-};
+import { Camera, TileData } from "./type";
 
 let tileKey: string = "";
 
 export default async function updateTiles(
   canvas: HTMLCanvasElement,
   camera: Camera,
-  tileData: {
-    [key: string]: {
-      [key: string]: Float32Array[];
-    };
-  }
+  tileData: TileData
 ) {
   const tilesInView = getTilesInView(canvas, camera);
 
@@ -41,23 +32,19 @@ export default async function updateTiles(
       const pbf = new Protobuf(res.data);
       const vectorTile = new VectorTile(pbf);
 
-      const layers: { [key: string]: Float32Array<ArrayBufferLike>[] } = {};
+      const layers: { layer: string; vertices: Float32Array }[] = [];
       Object.keys(LAYERS).forEach((layer) => {
         if (vectorTile?.layers?.[layer]) {
           const numFeatures = vectorTile.layers[layer]?._features?.length || 0;
 
-          const features = [];
+          const vertices = [];
           for (let i = 0; i < numFeatures; i++) {
             const geojson = vectorTile.layers[layer]
               .feature(i)
               .toGeoJSON(x, y, z);
-
-            const vertices = geometryToVertices(geojson.geometry);
-
-            features.push(vertices);
+            vertices.push(...geometryToVertices(geojson.geometry));
           }
-
-          layers[layer] = features;
+          layers.push({ layer, vertices: Float32Array.from(vertices) });
         }
       });
       tileData[tile.join("/")] = layers;
@@ -82,15 +69,12 @@ function getTilesInView(canvas: HTMLCanvasElement, camera: Camera) {
   const [minX, maxX] = [Math.max(minTile[0], 0), maxTile[0]];
   const [minY, maxY] = [Math.max(minTile[1], 0), maxTile[1]];
 
-  // const tilesInView: tilebelt.Tile = [];
-  // for (let x = minX; x <= maxX; x++) {
-  //   for (let y = minY; y <= maxY; y++) {
-  //     tilesInView.push([x, y, z]);
-  //   }
-  // }
-  const tilesInView = Array.from({ length: maxX - minX + 1 }, (_, i) =>
-    Array.from({ length: maxY - minY + 1 }, (_, j) => [minX + i, minY + j, z])
-  ).flat() as tilebelt.Tile[];
+  const tilesInView: tilebelt.Tile[] = [];
+  for (let x = minX; x <= maxX; x++) {
+    for (let y = minY; y <= maxY; y++) {
+      tilesInView.push([x, y, z]);
+    }
+  }
 
   return tilesInView;
 }
