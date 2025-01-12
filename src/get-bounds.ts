@@ -32,8 +32,8 @@ export default function getBounds(canvas: HTMLCanvasElement, camera: Camera) {
   const bbox = [
     Math.max(MercatorCoordinate.lngFromMercatorX(x1), -180), // left
     Math.max(MercatorCoordinate.latFromMercatorY(y1), -85.05), // bottom
-    Math.max(MercatorCoordinate.lngFromMercatorX(x2), 180), // right
-    Math.max(MercatorCoordinate.latFromMercatorY(y2), 85.05), // top
+    Math.min(MercatorCoordinate.lngFromMercatorX(x2), 180), // right
+    Math.min(MercatorCoordinate.latFromMercatorY(y2), 85.05), // top
   ];
 
   return bbox;
