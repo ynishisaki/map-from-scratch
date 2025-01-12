@@ -7,8 +7,6 @@ import geometryToVertices from "./geometry-to-vertices";
 import getBounds from "./get-bounds";
 import { Camera, TileData } from "./type";
 
-let tileKey: string = "";
-
 export default async function updateTiles(
   canvas: HTMLCanvasElement,
   camera: Camera,
@@ -16,46 +14,43 @@ export default async function updateTiles(
 ) {
   const tilesInView = getTilesInView(canvas, camera);
 
-  const key = tilesInView.map((t) => t.join("/")).join(";");
-  console.log("key", key);
-  if (tileKey !== key) {
-    tileData = {};
+  tilesInView.forEach(async (tile) => {
+    if (tileData[tile.join("/")]) {
+      // already fetched
+      return;
+    }
 
-    tilesInView.forEach(async (tile) => {
-      const [x, y, z] = tile;
+    const [x, y, z] = tile;
 
-      const reqStart = Date.now();
-      const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
-        responseType: "arraybuffer",
-      });
-
-      const pbf = new Protobuf(res.data);
-      const vectorTile = new VectorTile(pbf);
-
-      const layers: { layer: string; vertices: Float32Array }[] = [];
-      Object.keys(LAYERS).forEach((layer) => {
-        if (vectorTile?.layers?.[layer]) {
-          const numFeatures = vectorTile.layers[layer]?._features?.length || 0;
-
-          const vertices = [];
-          for (let i = 0; i < numFeatures; i++) {
-            const geojson = vectorTile.layers[layer]
-              .feature(i)
-              .toGeoJSON(x, y, z);
-            vertices.push(...geometryToVertices(geojson.geometry));
-          }
-          layers.push({ layer, vertices: Float32Array.from(vertices) });
-        }
-      });
-      tileData[tile.join("/")] = layers;
+    const reqStart = Date.now();
+    const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
+      responseType: "arraybuffer",
     });
-    tileKey = key;
-  }
+
+    const pbf = new Protobuf(res.data);
+    const vectorTile = new VectorTile(pbf);
+
+    const layers: { layer: string; vertices: Float32Array }[] = [];
+    Object.keys(LAYERS).forEach((layer) => {
+      if (vectorTile?.layers?.[layer]) {
+        const numFeatures = vectorTile.layers[layer]?._features?.length || 0;
+
+        const vertices = [];
+        for (let i = 0; i < numFeatures; i++) {
+          const geojson = vectorTile.layers[layer]
+            .feature(i)
+            .toGeoJSON(x, y, z);
+          vertices.push(...geometryToVertices(geojson.geometry));
+        }
+        layers.push({ layer, vertices: Float32Array.from(vertices) });
+      }
+    });
+    tileData[tile.join("/")] = layers;
+  });
 
   return {
     tilesInView,
     tileData,
-    tileKey,
   };
 }
 

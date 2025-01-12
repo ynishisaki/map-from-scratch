@@ -3,11 +3,17 @@ import { mat3, vec3 } from "gl-matrix";
 import Hammer from "hammerjs";
 import Stats from "stats.js";
 import atLimits from "./at-limites";
-import { LAYERS, MAX_ZOOM, MIN_ZOOM, TILE_SIZE } from "./constants";
+import {
+  INITIAL_SETTINGS,
+  LAYERS,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  TILE_SIZE,
+} from "./constants";
 import geometryToVertices from "./geometry-to-vertices";
 import getClipSpacePosition from "./get-clip-space-position";
 import MercatorCoordinate from "./mercator-coordinate";
-import StateManager from "./StateManager";
+import { Camera, TileData } from "./type";
 import updateTiles from "./update-tiles";
 import { createProgram, createShader } from "./webgl-utils";
 
@@ -32,288 +38,84 @@ const fragmentShaderSource = `
   }
 `;
 
-let loopRunning = true;
-
-let canvas: HTMLCanvasElement | null = null;
-let overlay: HTMLElement | null = null;
-let statsWidget: HTMLElement | null = null;
-
-const stateManager = new StateManager();
-
-stateManager.setCamera({
-  x: -0.41101919888888894,
-  y: 0.2478952993354263,
-  zoom: 1,
-});
-
-stateManager.setTilesInView([]);
-stateManager.setTileData({});
-
-let matrix: mat3;
-function updateMatrix(canvas: HTMLCanvasElement) {
-  const cameraMat = mat3.create();
-
-  const camera = stateManager.getCamera();
-  mat3.translate(cameraMat, cameraMat, [camera.x, camera.y]);
-
-  const zoomScale = 1 / Math.pow(2, camera.zoom);
-  const widthScale = TILE_SIZE / canvas.width;
-  const heightScale = TILE_SIZE / canvas.height;
-  mat3.scale(cameraMat, cameraMat, [
-    zoomScale / widthScale,
-    zoomScale / heightScale,
-  ]);
-
-  matrix = mat3.multiply(
-    [] as unknown as mat3,
-    mat3.create(),
-    mat3.invert([] as unknown as mat3, cameraMat)
-  );
-}
-
-let handlePan: (event: MouseEvent | HammerInput) => void;
-let handleZoom: (event: WheelEvent | HammerInput) => void;
-
-let timestamp: number;
-let slowCount: number;
-let frameStats: {
-  drawCalls: number;
-  vertices: number;
-  features: number;
-};
-
-const run = async (
-  canvasId: string,
-  mobile: boolean = false,
-  abort: (() => void) | null = null
-) => {
-  loopRunning = true;
-  timestamp = 0;
-  slowCount = 0;
-
-  const stats = new Stats();
-
-  canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
-  if (!canvas) {
-    throw new Error(`No canvas element with id ${canvasId}`);
-  }
-
-  const gl = canvas.getContext("webgl");
-  if (!gl) {
-    throw new Error("No WebGL context found");
-  }
-
-  overlay = document.getElementById(`${canvasId}-overlay`);
-
-  const camera = stateManager.getCamera();
-  updateMatrix(canvas);
-
-  const tileData = stateManager.getTileData();
-  const { tileData: newTileData } = await updateTiles(canvas, camera, tileData);
-  stateManager.setTileData(newTileData);
-
-  gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-
-  const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
-  const fragmentShader = createShader(
-    gl,
-    gl.FRAGMENT_SHADER,
-    fragmentShaderSource
-  );
-
-  if (!vertexShader || !fragmentShader) {
-    console.error("Failed to create shaders");
-    return;
-  }
-  const program = createProgram(gl, vertexShader, fragmentShader);
-  if (!program) {
-    console.error("Failed to create program");
-    return;
-  }
-  gl.clearColor(0, 0, 0, 0);
-  gl.useProgram(program);
-
-  const positionBuffer = gl.createBuffer();
-
-  const draw = async () => {
-    if (!canvas) return;
-
-    frameStats = { drawCalls: 0, vertices: 0, features: 0 };
-    stats.begin();
-
-    const matrixLocation = gl.getUniformLocation(program, "u_matrix");
-    gl.uniformMatrix3fv(matrixLocation, false, matrix);
-
-    const tileData = stateManager.getTileData();
-    const { tilesInView, tileData: newTileData } = await updateTiles(
-      canvas,
-      camera,
-      tileData
-    );
-    stateManager.setTileData(newTileData);
-
-    Object.keys(tileData).forEach((tile) => {
-      (tileData[tile] as any[]).forEach((tileLayer) => {
-        const { layer, vertices } = tileLayer;
-
-        if (LAYERS[layer as keyof typeof LAYERS]) {
-          // RGBA to WebGL color
-          const color = LAYERS[layer as keyof typeof LAYERS].map(
-            (n) => n / 255
-          );
-
-          const colorLocation = gl.getUniformLocation(program, "u_color");
-          gl.uniform4fv(colorLocation, color);
-
-          gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-          gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-          const positionAttributeLocation = gl.getAttribLocation(
-            program,
-            "a_position"
-          );
-          gl.enableVertexAttribArray(positionAttributeLocation);
-
-          const size = 2;
-          const type = gl.FLOAT;
-          const normalize = false;
-          const stride = 0;
-          let offset = 0;
-          gl.vertexAttribPointer(
-            positionAttributeLocation,
-            size,
-            type,
-            normalize,
-            stride,
-            offset
-          );
-
-          const primitiveType = gl.TRIANGLES;
-          offset = 0;
-          const count = vertices.length / 2;
-          gl.drawArrays(primitiveType, offset, count);
-
-          frameStats.drawCalls++;
-          frameStats.vertices += vertices.length;
-        }
-      });
-    });
-
-    overlay?.replaceChildren();
-
-    tilesInView.forEach((tile) => {
-      if (!canvas) return;
-
-      const colorLocation = gl.getUniformLocation(program, "u_color");
-      gl.uniform4fv(colorLocation, [1, 0, 0, 1]);
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-
-      const tileVertices = geometryToVertices(tilebelt.tileToGeoJSON(tile));
-      gl.bufferData(gl.ARRAY_BUFFER, tileVertices, gl.STATIC_DRAW);
-
-      const positionAttributeLocation = gl.getAttribLocation(
-        program,
-        "a_position"
-      );
-      gl.enableVertexAttribArray(positionAttributeLocation);
-
-      const size = 2;
-      const type = gl.FLOAT;
-      const normalize = false;
-      const stride = 0;
-      let offset = 0;
-      gl.vertexAttribPointer(
-        positionAttributeLocation,
-        size,
-        type,
-        normalize,
-        stride,
-        offset
-      );
-
-      // draw
-      const primitiveType = gl.LINES;
-      offset = 0;
-      const count = tileVertices.length / 2;
-      gl.drawArrays(primitiveType, offset, count);
-
-      // draw tile labels
-      const tileCoordinates = (tilebelt.tileToGeoJSON(tile) as any).coordinates;
-      const topLeft = tileCoordinates[0][0];
-      const [x, y] = MercatorCoordinate.fromLngLat(topLeft as [number, number]);
-
-      const [clipX, clipY] = vec3.transformMat3(
-        [] as unknown as vec3,
-        [x, y, 1],
-        matrix
-      );
-
-      const wx = ((1 + clipX) / 2) * canvas.width;
-      const wy = ((1 - clipY) / 2) * canvas.height;
-      const div = document.createElement("div");
-      div.className = "tile-label";
-      div.style.left = `${wx + 8}px`;
-      div.style.top = `${wy + 8}px`;
-      div.style.position = "absolute";
-      div.style.zIndex = "1000";
-      div.appendChild(document.createTextNode(tile.join("/")));
-      overlay?.appendChild(div);
-    });
-
-    if (mobile) {
-      stop(canvas, statsWidget);
-      if (abort) {
-        abort();
-      }
-      return;
-    }
-
-    const now = performance.now();
-    const fps = 1 / ((now - timestamp) / 1000);
-    if (fps < 10) {
-      slowCount++;
-
-      if (slowCount > 5) {
-        console.warn(`Too slow. Killing loop for ${canvasId}.`);
-        stop(canvas, statsWidget);
-        if (abort) {
-          abort();
-        }
-      }
-    }
-    timestamp = now;
-
-    stats.end();
-    if (loopRunning) {
-      window.requestAnimationFrame(draw);
-    }
+class CreateMap {
+  private camera: Camera;
+  private tilesInView: tilebelt.Tile[];
+  private tileData: TileData;
+  private matrix: mat3;
+  private timestamp: number;
+  private slowCount: number;
+  private frameStats: {
+    drawCalls: number;
+    vertices: number;
+    features: number;
   };
-  // start loop
-  window.requestAnimationFrame(draw);
+  private startX: number;
+  private startY: number;
+  private canvas: HTMLCanvasElement | null;
+  private hammer: HammerManager | null;
+  private loopRunning: boolean;
+  private overlay: HTMLElement | null;
+  private statsWidget: HTMLElement | null;
 
-  const hammer = new Hammer(canvas);
-  hammer.get("pan").set({ direction: Hammer.DIRECTION_ALL });
-  hammer.get("pinch").set({ enable: true });
+  constructor() {
+    const [initialX, initialY] = MercatorCoordinate.fromLngLat([
+      ...INITIAL_SETTINGS.lnglat,
+    ]);
+    this.camera = { x: initialX, y: initialY, zoom: INITIAL_SETTINGS.zoom };
 
-  let startX: number;
-  let startY: number;
+    this.tilesInView = [];
+    this.tileData = {};
+    this.matrix = mat3.create();
+    this.timestamp = 0;
+    this.slowCount = 0;
+    this.frameStats = { drawCalls: 0, vertices: 0, features: 0 };
+    this.startX = 0;
+    this.startY = 0;
+    this.canvas = null;
+    this.hammer = null;
+    this.loopRunning = true;
+    this.overlay = null;
+    this.statsWidget = null;
+  }
 
-  const handleMove = async (moveEvent: MouseEvent | HammerInput) => {
-    if (!canvas) return;
+  private updateMatrix() {
+    if (!this.canvas) return;
 
-    const [x, y] = getClipSpacePosition(moveEvent, canvas);
+    const cameraMat = mat3.create();
+
+    mat3.translate(cameraMat, cameraMat, [this.camera.x, this.camera.y]);
+
+    const zoomScale = 1 / Math.pow(2, this.camera.zoom);
+    const widthScale = TILE_SIZE / this.canvas.width;
+    const heightScale = TILE_SIZE / this.canvas.height;
+    mat3.scale(cameraMat, cameraMat, [
+      zoomScale / widthScale,
+      zoomScale / heightScale,
+    ]);
+
+    this.matrix = mat3.multiply(
+      [] as unknown as mat3,
+      mat3.create(),
+      mat3.invert([] as unknown as mat3, cameraMat)
+    );
+  }
+
+  private async handleMove(moveEvent: MouseEvent | HammerInput) {
+    if (!this.canvas) return;
+
+    const [x, y] = getClipSpacePosition(moveEvent, this.canvas);
 
     const [preX, preY] = vec3.transformMat3(
       [] as unknown as vec3,
-      [startX, startY, 0],
-      mat3.invert([] as unknown as mat3, matrix)
+      [this.startX, this.startY, 0],
+      mat3.invert([] as unknown as mat3, this.matrix)
     );
 
     const [postX, postY] = vec3.transformMat3(
       [] as unknown as vec3,
       [x, y, 0],
-      mat3.invert([] as unknown as mat3, matrix)
+      mat3.invert([] as unknown as mat3, this.matrix)
     );
 
     const deltaX = preX - postX;
@@ -322,136 +124,343 @@ const run = async (
       return;
     }
 
-    const camera = stateManager.getCamera();
-    camera.x += deltaX;
-    camera.y += deltaY;
-    stateManager.setCamera(camera);
+    this.camera.x += deltaX;
+    this.camera.y += deltaY;
 
-    updateMatrix(canvas);
+    this.updateMatrix();
 
-    if (atLimits(canvas, camera)) {
-      camera.x -= deltaX;
-      camera.y -= deltaY;
-      stateManager.setCamera(camera);
-      updateMatrix(canvas);
+    if (atLimits(this.canvas, this.camera)) {
+      this.camera.x -= deltaX;
+      this.camera.y -= deltaY;
+      this.updateMatrix();
       return;
     }
 
-    startX = x;
-    startY = y;
+    this.startX = x;
+    this.startY = y;
 
-    updateMatrix(canvas);
+    this.updateMatrix();
 
-    const tileData = stateManager.getTileData();
+    const tileData = this.tileData;
     const { tileData: newTileData } = await updateTiles(
-      canvas,
-      camera,
+      this.canvas,
+      this.camera,
       tileData
     );
-    stateManager.setTileData(newTileData);
-  };
+    this.tileData = newTileData;
+  }
 
-  handlePan = (startEvent: MouseEvent | HammerInput) => {
-    if (!canvas) return;
+  private handlePan(startEvent: MouseEvent | HammerInput) {
+    if (!this.canvas) return;
 
-    [startX, startY] = getClipSpacePosition(startEvent, canvas);
-    canvas.style.cursor = "grabbing";
+    [this.startX, this.startY] = getClipSpacePosition(startEvent, this.canvas);
+    this.canvas.style.cursor = "grabbing";
 
-    window.addEventListener("mousemove", handleMove);
-    hammer.on("pan", handleMove);
-
+    const handleMoveBound = this.handleMove.bind(this);
     const clear = (event: MouseEvent | HammerInput) => {
-      if (!canvas) return;
+      if (!this.canvas) return;
 
-      canvas.style.cursor = "grab";
-      window.removeEventListener("mousemove", handleMove);
+      this.canvas.style.cursor = "grab";
+      window.removeEventListener("mousemove", handleMoveBound);
       window.removeEventListener("mouseup", clear);
-      hammer.off("pan", handleMove);
-      hammer.off("panend", clear);
+      this.hammer?.off("pan", handleMoveBound);
+      this.hammer?.off("panend", clear);
     };
-    window.addEventListener("mouseup", clear);
-    hammer.on("panend", clear);
-  };
-  canvas.addEventListener("mousedown", handlePan);
-  hammer.on("panstart", handlePan);
 
-  handleZoom = async (wheelEvent: WheelEvent | HammerInput) => {
-    if (!canvas) return;
+    window.addEventListener("mousemove", handleMoveBound);
+    window.addEventListener("mouseup", clear);
+    this.hammer?.on("pan", handleMoveBound);
+    this.hammer?.on("panend", clear);
+  }
+
+  private async handleZoom(wheelEvent: WheelEvent | HammerInput) {
+    if (!this.canvas) return;
 
     wheelEvent.preventDefault();
-    const [x, y] = getClipSpacePosition(wheelEvent, canvas);
+    const [x, y] = getClipSpacePosition(wheelEvent, this.canvas);
 
     const [preZoomX, preZoomY] = vec3.transformMat3(
       [] as unknown as vec3,
       [x, y, 0],
-      mat3.invert([] as unknown as mat3, matrix)
+      mat3.invert([] as unknown as mat3, this.matrix)
     );
 
-    const camera = stateManager.getCamera();
-
-    const prevZoom = camera.zoom;
+    const prevZoom = this.camera.zoom;
     const zoomDelta = -wheelEvent.deltaY * (1 / 500);
-    camera.zoom += zoomDelta;
-    camera.zoom = Math.max(MIN_ZOOM, Math.min(camera.zoom, MAX_ZOOM));
-    stateManager.setCamera(camera);
-    updateMatrix(canvas);
+    this.camera.zoom = Math.max(
+      MIN_ZOOM,
+      Math.min(this.camera.zoom + zoomDelta, MAX_ZOOM)
+    );
+    this.updateMatrix();
 
-    if (atLimits(canvas, camera)) {
-      camera.zoom = prevZoom;
-      stateManager.setCamera(camera);
-      updateMatrix(canvas);
+    if (atLimits(this.canvas, this.camera)) {
+      this.camera.zoom = prevZoom;
+      this.updateMatrix();
       return;
     }
 
     const [postZoomX, postZoomY] = vec3.transformMat3(
       [] as unknown as vec3,
       [x, y, 0],
-      mat3.invert([] as unknown as mat3, matrix)
+      mat3.invert([] as unknown as mat3, this.matrix)
     );
 
-    camera.x += preZoomX - postZoomX;
-    camera.y += preZoomY - postZoomY;
-    stateManager.setCamera(camera);
-    updateMatrix(canvas);
+    this.camera.x += preZoomX - postZoomX;
+    this.camera.y += preZoomY - postZoomY;
+    this.updateMatrix();
 
-    const tileData = stateManager.getTileData();
+    const tileData = this.tileData;
     const { tileData: newTileData } = await updateTiles(
-      canvas,
-      camera,
+      this.canvas,
+      this.camera,
       tileData
     );
-    stateManager.setTileData(newTileData);
-  };
-  canvas.addEventListener("wheel", handleZoom);
-  hammer.on("pinch", handleZoom);
+    this.tileData = newTileData;
+  }
 
-  // setup stats widget
-  stats.showPanel(0);
-  statsWidget = stats.dom;
-  statsWidget.style.position = "absolute";
-  // statsWidget.style.left = mobile ? "0" : "-100px";
-  statsWidget.style.zIndex = "0";
-  canvas.parentElement?.appendChild(statsWidget);
-};
+  public async run(
+    canvasId: string,
+    mobile: boolean = false,
+    abort: (() => void) | null = null
+  ) {
+    this.loopRunning = true;
+    this.timestamp = 0;
+    this.slowCount = 0;
 
-export const stop = (
-  canvas: HTMLCanvasElement | null,
-  statsWidget: HTMLElement | null
-) => {
-  loopRunning = false;
+    const stats = new Stats();
 
-  if (!canvas) return;
-  if (!statsWidget) return;
+    this.canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+    if (!this.canvas) {
+      throw new Error(`No canvas element with id ${canvasId}`);
+    }
 
-  canvas.removeEventListener("wheel", handleZoom);
-  canvas.removeEventListener("mousedown", handlePan);
-  overlay?.replaceChildren();
-  statsWidget.remove();
-};
+    const gl = this.canvas.getContext("webgl");
+    if (!gl) {
+      throw new Error("No WebGL context found");
+    }
 
-export const getFrameStats = () => {
-  return frameStats;
-};
+    this.overlay = document.getElementById(`${canvasId}-overlay`);
 
-// export default run;
-run("canvas", false, () => {});
+    this.updateMatrix();
+
+    const tileData = this.tileData;
+    const { tileData: newTileData } = await updateTiles(
+      this.canvas,
+      this.camera,
+      tileData
+    );
+    this.tileData = newTileData;
+
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+    const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+    const fragmentShader = createShader(
+      gl,
+      gl.FRAGMENT_SHADER,
+      fragmentShaderSource
+    );
+
+    if (!vertexShader || !fragmentShader) {
+      console.error("Failed to create shaders");
+      return;
+    }
+    const program = createProgram(gl, vertexShader, fragmentShader);
+    if (!program) {
+      console.error("Failed to create program");
+      return;
+    }
+    gl.clearColor(0, 0, 0, 0);
+    gl.useProgram(program);
+
+    const positionBuffer = gl.createBuffer();
+
+    const draw = async () => {
+      if (!this.canvas) return;
+
+      this.frameStats = { drawCalls: 0, vertices: 0, features: 0 };
+      stats.begin();
+
+      const matrixLocation = gl.getUniformLocation(program, "u_matrix");
+      gl.uniformMatrix3fv(matrixLocation, false, this.matrix);
+
+      const tileData = this.tileData;
+      const { tilesInView: newTilesInView, tileData: newTileData } =
+        await updateTiles(this.canvas, this.camera, tileData);
+      this.tilesInView = newTilesInView;
+      this.tileData = newTileData;
+
+      Object.keys(tileData).forEach((tile) => {
+        (tileData[tile] as any[]).forEach((tileLayer) => {
+          const { layer, vertices } = tileLayer;
+
+          if (LAYERS[layer as keyof typeof LAYERS]) {
+            // RGBA to WebGL color
+            const color = LAYERS[layer as keyof typeof LAYERS].map(
+              (n) => n / 255
+            );
+
+            const colorLocation = gl.getUniformLocation(program, "u_color");
+            gl.uniform4fv(colorLocation, color);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+            const positionAttributeLocation = gl.getAttribLocation(
+              program,
+              "a_position"
+            );
+            gl.enableVertexAttribArray(positionAttributeLocation);
+
+            const size = 2;
+            const type = gl.FLOAT;
+            const normalize = false;
+            const stride = 0;
+            let offset = 0;
+            gl.vertexAttribPointer(
+              positionAttributeLocation,
+              size,
+              type,
+              normalize,
+              stride,
+              offset
+            );
+
+            const primitiveType = gl.TRIANGLES;
+            offset = 0;
+            const count = vertices.length / 2;
+            gl.drawArrays(primitiveType, offset, count);
+
+            this.frameStats.drawCalls++;
+            this.frameStats.vertices += vertices.length;
+          }
+        });
+      });
+
+      this.overlay?.replaceChildren();
+
+      this.tilesInView.forEach((tile) => {
+        if (!this.canvas) return;
+
+        const colorLocation = gl.getUniformLocation(program, "u_color");
+        gl.uniform4fv(colorLocation, [1, 0, 0, 1]);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+        const tileVertices = geometryToVertices(tilebelt.tileToGeoJSON(tile));
+        gl.bufferData(gl.ARRAY_BUFFER, tileVertices, gl.STATIC_DRAW);
+
+        const positionAttributeLocation = gl.getAttribLocation(
+          program,
+          "a_position"
+        );
+        gl.enableVertexAttribArray(positionAttributeLocation);
+
+        const size = 2;
+        const type = gl.FLOAT;
+        const normalize = false;
+        const stride = 0;
+        let offset = 0;
+        gl.vertexAttribPointer(
+          positionAttributeLocation,
+          size,
+          type,
+          normalize,
+          stride,
+          offset
+        );
+
+        // draw
+        const primitiveType = gl.LINES;
+        offset = 0;
+        const count = tileVertices.length / 2;
+        gl.drawArrays(primitiveType, offset, count);
+
+        // draw tile labels
+        const tileCoordinates = (tilebelt.tileToGeoJSON(tile) as any)
+          .coordinates;
+        const topLeft = tileCoordinates[0][0];
+        const [x, y] = MercatorCoordinate.fromLngLat(
+          topLeft as [number, number]
+        );
+
+        const [clipX, clipY] = vec3.transformMat3(
+          [] as unknown as vec3,
+          [x, y, 1],
+          this.matrix
+        );
+
+        const wx = ((1 + clipX) / 2) * this.canvas.width;
+        const wy = ((1 - clipY) / 2) * this.canvas.height;
+        const div = document.createElement("div");
+        div.className = "tile-label";
+        div.style.left = `${wx + 8}px`;
+        div.style.top = `${wy + 8}px`;
+        div.style.position = "absolute";
+        div.style.zIndex = "1000";
+        div.appendChild(document.createTextNode(tile.join("/")));
+        this.overlay?.appendChild(div);
+      });
+
+      const now = performance.now();
+      const fps = 1 / ((now - this.timestamp) / 1000);
+      if (fps < 10) {
+        this.slowCount++;
+
+        if (this.slowCount > 10) {
+          console.warn(`Too slow. Killing loop for ${canvasId}.`);
+          this.stop(this.canvas, this.statsWidget);
+          if (abort) {
+            abort();
+          }
+        }
+      }
+      this.timestamp = now;
+
+      stats.end();
+      if (this.loopRunning) {
+        window.requestAnimationFrame(draw);
+      }
+    };
+    // start loop
+    window.requestAnimationFrame(draw);
+
+    this.hammer = new Hammer(this.canvas);
+    this.hammer.get("pan").set({ direction: Hammer.DIRECTION_ALL });
+    this.hammer.get("pinch").set({ enable: true });
+
+    this.canvas.addEventListener("mousedown", this.handlePan.bind(this));
+    this.hammer.on("panstart", this.handlePan.bind(this));
+
+    this.canvas.addEventListener("wheel", this.handleZoom.bind(this));
+    this.hammer.on("pinch", this.handleZoom.bind(this));
+
+    // setup stats widget
+    stats.showPanel(0);
+    this.statsWidget = stats.dom;
+    this.statsWidget.style.position = "absolute";
+    this.statsWidget.style.zIndex = "0";
+    this.canvas.parentElement?.appendChild(this.statsWidget);
+  }
+
+  public stop(
+    canvas: HTMLCanvasElement | null,
+    statsWidget: HTMLElement | null
+  ) {
+    this.loopRunning = false;
+
+    if (!canvas) return;
+    if (!statsWidget) return;
+
+    canvas.removeEventListener("wheel", this.handleZoom.bind(this));
+    canvas.removeEventListener("mousedown", this.handlePan.bind(this));
+    this.overlay?.replaceChildren();
+    statsWidget.remove();
+  }
+
+  public getFrameStats() {
+    return this.frameStats;
+  }
+}
+
+const map = new CreateMap();
+map.run("canvas", false, () => {});
