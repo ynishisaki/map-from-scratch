@@ -1,20 +1,28 @@
 import * as tilebelt from "@mapbox/tilebelt";
+import { VectorTile } from "@mapbox/vector-tile";
+import axios from "axios";
 import { mat3, vec3 } from "gl-matrix";
 import Hammer from "hammerjs";
+import Protobuf from "pbf";
 import Stats from "stats.js";
 import atLimits from "./at-limites";
 import {
   INITIAL_SETTINGS,
   LAYERS,
+  MAX_TILE_ZOOM,
   MAX_ZOOM,
+  MIN_TILE_ZOOM,
   MIN_ZOOM,
+  TILE_ATTRIBUTION,
+  TILE_BUFFER,
   TILE_SIZE,
+  TILE_URL,
 } from "./constants";
 import geometryToVertices from "./geometry-to-vertices";
+import getBounds from "./get-bounds";
 import getClipSpacePosition from "./get-clip-space-position";
 import MercatorCoordinate from "./mercator-coordinate";
-import { Camera, TileData } from "./type";
-import updateTiles from "./update-tiles";
+import { Camera, TileData, TileLayerData } from "./type";
 import { createProgram, createShader } from "./webgl-utils";
 
 const vertexShaderSource = `
@@ -40,6 +48,7 @@ const fragmentShaderSource = `
 
 class CreateMap {
   private camera: Camera;
+  private cacheStats: { cacheHits: number; tilesLoaded: number };
   private tilesInView: tilebelt.Tile[];
   private tileData: TileData;
   private matrix: mat3;
@@ -64,6 +73,7 @@ class CreateMap {
     ]);
     this.camera = { x: initialX, y: initialY, zoom: INITIAL_SETTINGS.zoom };
 
+    this.cacheStats = { cacheHits: 0, tilesLoaded: 0 };
     this.tilesInView = [];
     this.tileData = {};
     this.matrix = mat3.create();
@@ -77,6 +87,31 @@ class CreateMap {
     this.loopRunning = true;
     this.overlay = null;
     this.statsWidget = null;
+  }
+
+  private addAttribution() {
+    const attribution = document.createElement("div");
+    attribution.className = "attribution";
+    attribution.innerHTML = TILE_ATTRIBUTION;
+    attribution.style.position = "absolute";
+    attribution.style.bottom = "0";
+    attribution.style.right = "0";
+    attribution.style.backgroundColor = "white";
+    attribution.style.padding = "4px";
+
+    document.getElementById("canvas-wrapper")?.appendChild(attribution);
+  }
+
+  private resizeCanvas() {
+    if (this.canvas) {
+      this.canvas.width = this.canvas.clientWidth;
+      this.canvas.height = this.canvas.clientHeight;
+      const gl = this.canvas.getContext("webgl");
+      if (gl) {
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+      }
+      this.updateMatrix();
+    }
   }
 
   private updateMatrix() {
@@ -141,11 +176,10 @@ class CreateMap {
 
     this.updateMatrix();
 
-    const tileData = this.tileData;
-    const { tileData: newTileData } = await updateTiles(
+    const { tileData: newTileData } = await this.updateTiles(
       this.canvas,
       this.camera,
-      tileData
+      this.tileData
     );
     this.tileData = newTileData;
   }
@@ -209,11 +243,10 @@ class CreateMap {
     this.camera.y += preZoomY - postZoomY;
     this.updateMatrix();
 
-    const tileData = this.tileData;
-    const { tileData: newTileData } = await updateTiles(
+    const { tileData: newTileData } = await this.updateTiles(
       this.canvas,
       this.camera,
-      tileData
+      this.tileData
     );
     this.tileData = newTileData;
   }
@@ -239,15 +272,19 @@ class CreateMap {
       throw new Error("No WebGL context found");
     }
 
+    window.addEventListener("resize", this.resizeCanvas.bind(this));
+    this.resizeCanvas();
+
+    this.addAttribution();
+
     this.overlay = document.getElementById(`${canvasId}-overlay`);
 
     this.updateMatrix();
 
-    const tileData = this.tileData;
-    const { tileData: newTileData } = await updateTiles(
+    const { tileData: newTileData } = await this.updateTiles(
       this.canvas,
       this.camera,
-      tileData
+      this.tileData
     );
     this.tileData = newTileData;
 
@@ -283,14 +320,15 @@ class CreateMap {
       const matrixLocation = gl.getUniformLocation(program, "u_matrix");
       gl.uniformMatrix3fv(matrixLocation, false, this.matrix);
 
-      const tileData = this.tileData;
-      const { tilesInView: newTilesInView, tileData: newTileData } =
-        await updateTiles(this.canvas, this.camera, tileData);
-      this.tilesInView = newTilesInView;
+      const { tileData: newTileData } = await this.updateTiles(
+        this.canvas,
+        this.camera,
+        this.tileData
+      );
       this.tileData = newTileData;
 
-      Object.keys(tileData).forEach((tile) => {
-        (tileData[tile] as any[]).forEach((tileLayer) => {
+      Object.keys(this.tileData).forEach((tile) => {
+        (this.tileData[tile] as any[]).forEach((tileLayer) => {
           const { layer, vertices } = tileLayer;
 
           if (LAYERS[layer as keyof typeof LAYERS]) {
@@ -376,8 +414,9 @@ class CreateMap {
         gl.drawArrays(primitiveType, offset, count);
 
         // draw tile labels
-        const tileCoordinates = (tilebelt.tileToGeoJSON(tile) as any)
-          .coordinates;
+        const tileCoordinates = (
+          tilebelt.tileToGeoJSON(tile as unknown as tilebelt.Tile) as any
+        ).coordinates;
         const topLeft = tileCoordinates[0][0];
         const [x, y] = MercatorCoordinate.fromLngLat(
           topLeft as [number, number]
@@ -459,6 +498,112 @@ class CreateMap {
 
   public getFrameStats() {
     return this.frameStats;
+  }
+
+  private async updateTiles(
+    canvas: HTMLCanvasElement,
+    camera: Camera,
+    prevTileData: TileData
+  ) {
+    const tileData: { [key: string]: TileLayerData | undefined } = prevTileData;
+
+    const tilesToLoad = this.getTilesToLoad(canvas, camera);
+
+    tilesToLoad.forEach(async (tile) => {
+      if (tileData[tile]) {
+        this.cacheStats.cacheHits++;
+        return;
+      } else {
+        this.tileData[tile] = [];
+      }
+
+      try {
+        const [x, y, z] = tile.split("/").map(Number);
+
+        const reqStart = Date.now();
+        const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
+          responseType: "arraybuffer",
+        });
+        this.cacheStats.tilesLoaded++;
+
+        const pbf = new Protobuf(res.data);
+        const vectorTile = new VectorTile(pbf);
+
+        const layers: { layer: string; vertices: Float32Array }[] = [];
+        Object.keys(LAYERS).forEach((layer) => {
+          if (vectorTile?.layers?.[layer]) {
+            const numFeatures =
+              vectorTile.layers[layer]?._features?.length || 0;
+
+            const vertices = [];
+            for (let i = 0; i < numFeatures; i++) {
+              const geojson = vectorTile.layers[layer]
+                .feature(i)
+                .toGeoJSON(x, y, z);
+              vertices.push(...geometryToVertices(geojson.geometry));
+            }
+            layers.push({ layer, vertices: Float32Array.from(vertices) });
+          }
+        });
+        this.tileData[tile] = layers;
+      } catch (e) {
+        console.warn(`Tile ${tile} request failed.`, e);
+        this.tileData[tile] = undefined;
+      }
+    });
+
+    return {
+      tileData,
+    };
+  }
+
+  private getTilesToLoad(canvas: HTMLCanvasElement, camera: Camera) {
+    const bbox = getBounds(canvas, camera);
+
+    const z = Math.max(
+      MIN_TILE_ZOOM,
+      Math.min(Math.trunc(camera.zoom), MAX_TILE_ZOOM)
+    );
+    const minTile = tilebelt.pointToTile(bbox[0], bbox[3], z); // top-left
+    const maxTile = tilebelt.pointToTile(bbox[2], bbox[1], z); // bottom-right
+
+    const [minX, maxX] = [Math.max(minTile[0], 0), maxTile[0]];
+    const [minY, maxY] = [Math.max(minTile[1], 0), maxTile[1]];
+
+    let tilesToLoad: tilebelt.Tile[] = [];
+    for (let x = minX; x <= maxX; x++) {
+      for (let y = minY; y <= maxY; y++) {
+        tilesToLoad.push([x, y, z]);
+      }
+    }
+
+    const bufferedTiles: tilebelt.Tile[] = [];
+    for (let bufX = minX - TILE_BUFFER; bufX <= maxX + TILE_BUFFER; bufX++) {
+      for (let bufY = minY - TILE_BUFFER; bufY <= maxY + TILE_BUFFER; bufY++) {
+        bufferedTiles.push([bufX, bufY, z]);
+
+        // 2 levels of parent tiles
+        bufferedTiles.push(tilebelt.getParent([bufX, bufY, z]));
+        bufferedTiles.push(
+          tilebelt.getParent(tilebelt.getParent([bufX, bufY, z]))
+        );
+      }
+    }
+
+    return [
+      ...new Set([
+        ...tilesToLoad.map((tile) => tile.join("/")),
+        ...bufferedTiles.map((tile) => tile.join("/")),
+      ]),
+    ].filter((tile) => {
+      const [x, y, z] = tile.split("/").map(Number);
+      const N = Math.pow(2, z);
+      const isValidX = x >= 0 && x < N;
+      const isValidY = y >= 0 && y < N;
+      const isValidZ = z >= 0 && z <= MAX_TILE_ZOOM;
+
+      return isValidX && isValidY && isValidZ;
+    });
   }
 }
 

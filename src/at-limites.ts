@@ -1,3 +1,4 @@
+import { TILE_BBOX } from "./constants";
 import getBounds from "./get-bounds";
 
 type Camera = {
@@ -9,9 +10,9 @@ type Camera = {
 export default function atLimits(canvas: HTMLCanvasElement, camera: Camera) {
   const bbox = getBounds(canvas, camera);
   return (
-    bbox[0] === -180 ||
-    bbox[1] === -85.05 ||
-    bbox[2] === 180 ||
-    bbox[3] === 85.05
+    bbox[0] === TILE_BBOX[0] ||
+    bbox[1] === TILE_BBOX[1] ||
+    bbox[2] === TILE_BBOX[2] ||
+    bbox[3] === TILE_BBOX[3]
   );
 }
