@@ -114,6 +114,122 @@ class CreateMap {
     }
   }
 
+  private getTilesToLoad(canvas: HTMLCanvasElement, camera: Camera) {
+    const bbox = getBounds(canvas, camera);
+
+    const z = Math.max(
+      MIN_TILE_ZOOM,
+      Math.min(Math.trunc(camera.zoom), MAX_TILE_ZOOM)
+    );
+    const minTile = tilebelt.pointToTile(bbox[0], bbox[3], z); // top-left
+    const maxTile = tilebelt.pointToTile(bbox[2], bbox[1], z); // bottom-right
+
+    const [minX, maxX] = [Math.max(minTile[0], 0), maxTile[0]];
+    const [minY, maxY] = [Math.max(minTile[1], 0), maxTile[1]];
+
+    let tilesToLoad: tilebelt.Tile[] = [];
+    for (let x = minX; x <= maxX; x++) {
+      for (let y = minY; y <= maxY; y++) {
+        tilesToLoad.push([x, y, z]);
+      }
+    }
+
+    const bufferedTiles: tilebelt.Tile[] = [];
+    for (let bufX = minX - TILE_BUFFER; bufX <= maxX + TILE_BUFFER; bufX++) {
+      for (let bufY = minY - TILE_BUFFER; bufY <= maxY + TILE_BUFFER; bufY++) {
+        bufferedTiles.push([bufX, bufY, z]);
+
+        // 2 levels of parent tiles
+        bufferedTiles.push(tilebelt.getParent([bufX, bufY, z]));
+        bufferedTiles.push(
+          tilebelt.getParent(tilebelt.getParent([bufX, bufY, z]))
+        );
+      }
+    }
+
+    return [
+      ...new Set([
+        ...tilesToLoad.map((tile) => tile.join("/")),
+        ...bufferedTiles.map((tile) => tile.join("/")),
+      ]),
+    ].filter((tile) => {
+      const [x, y, z] = tile.split("/").map(Number);
+      const N = Math.pow(2, z);
+      const isValidX = x >= 0 && x < N;
+      const isValidY = y >= 0 && y < N;
+      const isValidZ = z >= MIN_TILE_ZOOM && z <= MAX_TILE_ZOOM;
+
+      return isValidX && isValidY && isValidZ;
+    });
+  }
+
+  private async updateTiles(canvas: HTMLCanvasElement, camera: Camera) {
+    const tilesToLoad = this.getTilesToLoad(canvas, camera);
+
+    tilesToLoad.forEach(async (tile) => {
+      if (this.tileData[tile]) {
+        this.cacheStats.cacheHits++;
+        return;
+      } else {
+        this.tileData[tile] = [];
+      }
+
+      try {
+        const [x, y, z] = tile.split("/").map(Number);
+
+        const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
+          responseType: "arraybuffer",
+        });
+        this.cacheStats.tilesLoaded++;
+
+        const pbf = new Protobuf(res.data);
+        const vectorTile = new VectorTile(pbf);
+
+        const layers: TileLayerData = [];
+        Object.keys(LAYERS).forEach((layer) => {
+          if (vectorTile?.layers?.[layer]) {
+            const numFeatures =
+              vectorTile.layers[layer]?._features?.length || 0;
+
+            const vertices = [];
+            for (let i = 0; i < numFeatures; i++) {
+              const geojson = vectorTile.layers[layer]
+                .feature(i)
+                .toGeoJSON(x, y, z);
+              vertices.push(...geometryToVertices(geojson.geometry));
+            }
+            layers.push({ layer, vertices: Float32Array.from(vertices) });
+          }
+        });
+        this.tileData[tile] = layers;
+      } catch (e) {
+        console.warn(`Tile ${tile} request failed.`, e);
+        this.tileData[tile] = undefined;
+      }
+    });
+
+    return;
+  }
+
+  private getPlaceholderTile(tile: tilebelt.Tile) {
+    const parent = tilebelt.getParent(tile)?.join("/");
+    const parentFeatureSet = this.tileData[parent];
+    if (parentFeatureSet && parentFeatureSet.length > 0) {
+      return parentFeatureSet;
+    }
+
+    const childFeatureSets: TileLayerData[] = [];
+    const children = (tilebelt.getChildren(tile) || []).map((t) => t.join("/"));
+    children.forEach((child) => {
+      const featureSet = this.tileData[child];
+      if (featureSet && featureSet.length > 0) {
+        childFeatureSets.push(featureSet);
+      }
+    });
+
+    return childFeatureSets;
+  }
+
   private updateMatrix() {
     if (!this.canvas) return;
 
@@ -176,12 +292,7 @@ class CreateMap {
 
     this.updateMatrix();
 
-    const { tileData: newTileData } = await this.updateTiles(
-      this.canvas,
-      this.camera,
-      this.tileData
-    );
-    this.tileData = newTileData;
+    await this.updateTiles(this.canvas, this.camera);
   }
 
   private handlePan(startEvent: MouseEvent | HammerInput) {
@@ -243,12 +354,7 @@ class CreateMap {
     this.camera.y += preZoomY - postZoomY;
     this.updateMatrix();
 
-    const { tileData: newTileData } = await this.updateTiles(
-      this.canvas,
-      this.camera,
-      this.tileData
-    );
-    this.tileData = newTileData;
+    await this.updateTiles(this.canvas, this.camera);
   }
 
   public async run(
@@ -281,12 +387,7 @@ class CreateMap {
 
     this.updateMatrix();
 
-    const { tileData: newTileData } = await this.updateTiles(
-      this.canvas,
-      this.camera,
-      this.tileData
-    );
-    this.tileData = newTileData;
+    await this.updateTiles(this.canvas, this.camera);
 
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 
@@ -320,12 +421,61 @@ class CreateMap {
       const matrixLocation = gl.getUniformLocation(program, "u_matrix");
       gl.uniformMatrix3fv(matrixLocation, false, this.matrix);
 
-      const { tileData: newTileData } = await this.updateTiles(
-        this.canvas,
-        this.camera,
-        this.tileData
-      );
-      this.tileData = newTileData;
+      this.tilesInView.forEach((tile) => {
+        if (!this.canvas) return;
+
+        let data: any = this.tileData[tile.join("/")];
+
+        if (data?.length === 0) {
+          data = this.getPlaceholderTile(tile);
+        }
+
+        (data || []).forEach((tileLayer: any) => {
+          const { layer, vertices } = tileLayer;
+
+          if (LAYERS[layer as keyof typeof LAYERS]) {
+            const color = LAYERS[layer as keyof typeof LAYERS].map(
+              (n) => n / 255
+            );
+
+            const colorLocation = gl.getUniformLocation(program, "u_color");
+            gl.uniform4fv(colorLocation, color);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+            const positionAttributeLocation = gl.getAttribLocation(
+              program,
+              "a_position"
+            );
+            gl.enableVertexAttribArray(positionAttributeLocation);
+
+            const size = 2;
+            const type = gl.FLOAT;
+            const normalize = false;
+            const stride = 0;
+            let offset = 0;
+            gl.vertexAttribPointer(
+              positionAttributeLocation,
+              size,
+              type,
+              normalize,
+              stride,
+              offset
+            );
+
+            const primitiveType = gl.TRIANGLES;
+            offset = 0;
+            const count = vertices.length / 2;
+            gl.drawArrays(primitiveType, offset, count);
+
+            this.frameStats.drawCalls++;
+            this.frameStats.vertices += vertices.length;
+          }
+        });
+      });
+
+      await this.updateTiles(this.canvas, this.camera);
 
       Object.keys(this.tileData).forEach((tile) => {
         (this.tileData[tile] as any[]).forEach((tileLayer) => {
@@ -382,9 +532,8 @@ class CreateMap {
         const colorLocation = gl.getUniformLocation(program, "u_color");
         gl.uniform4fv(colorLocation, [1, 0, 0, 1]);
 
-        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-
         const tileVertices = geometryToVertices(tilebelt.tileToGeoJSON(tile));
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, tileVertices, gl.STATIC_DRAW);
 
         const positionAttributeLocation = gl.getAttribLocation(
@@ -407,7 +556,6 @@ class CreateMap {
           offset
         );
 
-        // draw
         const primitiveType = gl.LINES;
         offset = 0;
         const count = tileVertices.length / 2;
@@ -494,116 +642,6 @@ class CreateMap {
     canvas.removeEventListener("mousedown", this.handlePan.bind(this));
     this.overlay?.replaceChildren();
     statsWidget.remove();
-  }
-
-  public getFrameStats() {
-    return this.frameStats;
-  }
-
-  private async updateTiles(
-    canvas: HTMLCanvasElement,
-    camera: Camera,
-    prevTileData: TileData
-  ) {
-    const tileData: { [key: string]: TileLayerData | undefined } = prevTileData;
-
-    const tilesToLoad = this.getTilesToLoad(canvas, camera);
-
-    tilesToLoad.forEach(async (tile) => {
-      if (tileData[tile]) {
-        this.cacheStats.cacheHits++;
-        return;
-      } else {
-        this.tileData[tile] = [];
-      }
-
-      try {
-        const [x, y, z] = tile.split("/").map(Number);
-
-        const reqStart = Date.now();
-        const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
-          responseType: "arraybuffer",
-        });
-        this.cacheStats.tilesLoaded++;
-
-        const pbf = new Protobuf(res.data);
-        const vectorTile = new VectorTile(pbf);
-
-        const layers: { layer: string; vertices: Float32Array }[] = [];
-        Object.keys(LAYERS).forEach((layer) => {
-          if (vectorTile?.layers?.[layer]) {
-            const numFeatures =
-              vectorTile.layers[layer]?._features?.length || 0;
-
-            const vertices = [];
-            for (let i = 0; i < numFeatures; i++) {
-              const geojson = vectorTile.layers[layer]
-                .feature(i)
-                .toGeoJSON(x, y, z);
-              vertices.push(...geometryToVertices(geojson.geometry));
-            }
-            layers.push({ layer, vertices: Float32Array.from(vertices) });
-          }
-        });
-        this.tileData[tile] = layers;
-      } catch (e) {
-        console.warn(`Tile ${tile} request failed.`, e);
-        this.tileData[tile] = undefined;
-      }
-    });
-
-    return {
-      tileData,
-    };
-  }
-
-  private getTilesToLoad(canvas: HTMLCanvasElement, camera: Camera) {
-    const bbox = getBounds(canvas, camera);
-
-    const z = Math.max(
-      MIN_TILE_ZOOM,
-      Math.min(Math.trunc(camera.zoom), MAX_TILE_ZOOM)
-    );
-    const minTile = tilebelt.pointToTile(bbox[0], bbox[3], z); // top-left
-    const maxTile = tilebelt.pointToTile(bbox[2], bbox[1], z); // bottom-right
-
-    const [minX, maxX] = [Math.max(minTile[0], 0), maxTile[0]];
-    const [minY, maxY] = [Math.max(minTile[1], 0), maxTile[1]];
-
-    let tilesToLoad: tilebelt.Tile[] = [];
-    for (let x = minX; x <= maxX; x++) {
-      for (let y = minY; y <= maxY; y++) {
-        tilesToLoad.push([x, y, z]);
-      }
-    }
-
-    const bufferedTiles: tilebelt.Tile[] = [];
-    for (let bufX = minX - TILE_BUFFER; bufX <= maxX + TILE_BUFFER; bufX++) {
-      for (let bufY = minY - TILE_BUFFER; bufY <= maxY + TILE_BUFFER; bufY++) {
-        bufferedTiles.push([bufX, bufY, z]);
-
-        // 2 levels of parent tiles
-        bufferedTiles.push(tilebelt.getParent([bufX, bufY, z]));
-        bufferedTiles.push(
-          tilebelt.getParent(tilebelt.getParent([bufX, bufY, z]))
-        );
-      }
-    }
-
-    return [
-      ...new Set([
-        ...tilesToLoad.map((tile) => tile.join("/")),
-        ...bufferedTiles.map((tile) => tile.join("/")),
-      ]),
-    ].filter((tile) => {
-      const [x, y, z] = tile.split("/").map(Number);
-      const N = Math.pow(2, z);
-      const isValidX = x >= 0 && x < N;
-      const isValidY = y >= 0 && y < N;
-      const isValidZ = z >= 0 && z <= MAX_TILE_ZOOM;
-
-      return isValidX && isValidY && isValidZ;
-    });
   }
 }
 

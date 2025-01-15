@@ -3,13 +3,6 @@ export const INITIAL_SETTINGS = {
   zoom: 10,
 } as const;
 
-// const bbox = [
-//   Math.max(MercatorCoordinate.lngFromMercatorX(x1), -180), // left
-//   Math.max(MercatorCoordinate.latFromMercatorY(y1), -85.05), // bottom
-//   Math.min(MercatorCoordinate.lngFromMercatorX(x2), 180), // right
-//   Math.min(MercatorCoordinate.latFromMercatorY(y2), 85.05), // top
-// ];
-
 export const TILE_BBOX = [
   122.440567, // left
   22.546489, // bottom
@@ -22,8 +15,8 @@ export const TILE_ATTRIBUTION = `<a href="https://github.com/gsi-cyberjapan/gsim
 export const TILE_SIZE = 512;
 export const TILE_BUFFER = 1;
 
-export const MIN_TILE_ZOOM = 5;
-export const MAX_TILE_ZOOM = 18;
+export const MIN_TILE_ZOOM = 7;
+export const MAX_TILE_ZOOM = 16;
 
 export const MIN_ZOOM = 5;
 export const MAX_ZOOM = 18;
