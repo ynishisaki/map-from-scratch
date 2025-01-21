@@ -1,9 +1,6 @@
 import * as tilebelt from "@mapbox/tilebelt";
-import { VectorTile } from "@mapbox/vector-tile";
-import axios from "axios";
 import { mat3, vec3 } from "gl-matrix";
 import Hammer from "hammerjs";
-import Protobuf from "pbf";
 import Stats from "stats.js";
 import atLimits from "./at-limites";
 import {
@@ -18,6 +15,7 @@ import {
   TILE_SIZE,
   TILE_URL,
 } from "./constants";
+import fetchTile from "./fetch-tile";
 import geometryToVertices from "./geometry-to-vertices";
 import getBounds from "./get-bounds";
 import getClipSpacePosition from "./get-clip-space-position";
@@ -49,15 +47,15 @@ const fragmentShaderSource = `
 class CreateMap {
   private camera: Camera;
   private cacheStats: { cacheHits: number; tilesLoaded: number };
+  private tiles: TileData;
   private tilesInView: tilebelt.Tile[];
-  private tileData: TileData;
+  private tileWorker: Worker;
   private matrix: mat3;
   private timestamp: number;
   private slowCount: number;
   private frameStats: {
     drawCalls: number;
     vertices: number;
-    features: number;
   };
   private startX: number;
   private startY: number;
@@ -74,12 +72,15 @@ class CreateMap {
     this.camera = { x: initialX, y: initialY, zoom: INITIAL_SETTINGS.zoom };
 
     this.cacheStats = { cacheHits: 0, tilesLoaded: 0 };
+    this.tiles = {};
     this.tilesInView = [];
-    this.tileData = {};
+    this.tileWorker = new Worker(new URL("tile-worker.js", import.meta.url), {
+      type: "module",
+    });
     this.matrix = mat3.create();
     this.timestamp = 0;
     this.slowCount = 0;
-    this.frameStats = { drawCalls: 0, vertices: 0, features: 0 };
+    this.frameStats = { drawCalls: 0, vertices: 0 };
     this.startX = 0;
     this.startY = 0;
     this.canvas = null;
@@ -127,10 +128,10 @@ class CreateMap {
     const [minX, maxX] = [Math.max(minTile[0], 0), maxTile[0]];
     const [minY, maxY] = [Math.max(minTile[1], 0), maxTile[1]];
 
-    let tilesToLoad: tilebelt.Tile[] = [];
+    this.tilesInView = [];
     for (let x = minX; x <= maxX; x++) {
       for (let y = minY; y <= maxY; y++) {
-        tilesToLoad.push([x, y, z]);
+        this.tilesInView.push([x, y, z]);
       }
     }
 
@@ -149,7 +150,7 @@ class CreateMap {
 
     return [
       ...new Set([
-        ...tilesToLoad.map((tile) => tile.join("/")),
+        ...this.tilesInView.map((tile) => tile.join("/")),
         ...bufferedTiles.map((tile) => tile.join("/")),
       ]),
     ].filter((tile) => {
@@ -166,45 +167,32 @@ class CreateMap {
   private async updateTiles(canvas: HTMLCanvasElement, camera: Camera) {
     const tilesToLoad = this.getTilesToLoad(canvas, camera);
 
+    const inView = this.tilesInView.map((t) => t.join("/"));
     tilesToLoad.forEach(async (tile) => {
-      if (this.tileData[tile]) {
-        this.cacheStats.cacheHits++;
+      if (this.tiles[tile]) {
         return;
       } else {
-        this.tileData[tile] = [];
+        this.tiles[tile] = [];
       }
 
       try {
-        const [x, y, z] = tile.split("/").map(Number);
-
-        const res = await axios.get(`${TILE_URL}/${z}/${x}/${y}.pbf`, {
-          responseType: "arraybuffer",
-        });
-        this.cacheStats.tilesLoaded++;
-
-        const pbf = new Protobuf(res.data);
-        const vectorTile = new VectorTile(pbf);
-
-        const layers: TileLayerData = [];
-        Object.keys(LAYERS).forEach((layer) => {
-          if (vectorTile?.layers?.[layer]) {
-            const numFeatures =
-              vectorTile.layers[layer]?._features?.length || 0;
-
-            const vertices = [];
-            for (let i = 0; i < numFeatures; i++) {
-              const geojson = vectorTile.layers[layer]
-                .feature(i)
-                .toGeoJSON(x, y, z);
-              vertices.push(...geometryToVertices(geojson.geometry));
-            }
-            layers.push({ layer, vertices: Float32Array.from(vertices) });
-          }
-        });
-        this.tileData[tile] = layers;
+        if (inView.includes(tile)) {
+          const tileData = await fetchTile({
+            tile,
+            layers: {
+              ...(LAYERS as unknown as {
+                [key: string]: [number, number, number, number];
+              }),
+            },
+            url: TILE_URL,
+          });
+          this.tiles[tile] = tileData;
+        } else {
+          this.tileWorker.postMessage({ tile, layers: LAYERS, url: TILE_URL });
+        }
       } catch (e) {
-        console.warn(`Tile ${tile} request failed.`, e);
-        this.tileData[tile] = undefined;
+        console.warn(`Error loaoting tile ${tile}`, e);
+        this.tiles[tile] = undefined;
       }
     });
 
@@ -213,7 +201,7 @@ class CreateMap {
 
   private getPlaceholderTile(tile: tilebelt.Tile) {
     const parent = tilebelt.getParent(tile)?.join("/");
-    const parentFeatureSet = this.tileData[parent];
+    const parentFeatureSet = this.tiles[parent];
     if (parentFeatureSet && parentFeatureSet.length > 0) {
       return parentFeatureSet;
     }
@@ -221,7 +209,7 @@ class CreateMap {
     const childFeatureSets: TileLayerData[] = [];
     const children = (tilebelt.getChildren(tile) || []).map((t) => t.join("/"));
     children.forEach((child) => {
-      const featureSet = this.tileData[child];
+      const featureSet = this.tiles[child];
       if (featureSet && featureSet.length > 0) {
         childFeatureSets.push(featureSet);
       }
@@ -250,6 +238,294 @@ class CreateMap {
       mat3.create(),
       mat3.invert([] as unknown as mat3, cameraMat)
     );
+  }
+
+  public async run(
+    canvasId: string,
+    mobile: boolean = false,
+    abort: (() => void) | null = null
+  ) {
+    this.loopRunning = true;
+    this.timestamp = 0;
+    this.slowCount = 0;
+
+    const stats = new Stats();
+
+    this.canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+    if (!this.canvas) {
+      throw new Error(`No canvas element with id ${canvasId}`);
+    }
+
+    const gl = this.canvas.getContext("webgl");
+    if (!gl) {
+      throw new Error("No WebGL context found");
+    }
+
+    this.addAttribution();
+
+    this.overlay = document.getElementById(`${canvasId}-overlay`);
+
+    this.tileWorker.onmessage = (event) => {
+      const { tile, tileData } = event.data;
+      this.tiles[tile] = tileData;
+    };
+    this.tileWorker.onerror = (error) => {
+      console.error("Uncaught worker error.", error);
+    };
+
+    this.updateMatrix();
+    await this.updateTiles(this.canvas, this.camera);
+
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+    window.addEventListener("resize", this.resizeCanvas.bind(this));
+    this.resizeCanvas();
+
+    const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+    const fragmentShader = createShader(
+      gl,
+      gl.FRAGMENT_SHADER,
+      fragmentShaderSource
+    );
+
+    if (!vertexShader || !fragmentShader) {
+      console.error("Failed to create shaders");
+      return;
+    }
+    const program = createProgram(gl, vertexShader, fragmentShader);
+    if (!program) {
+      console.error("Failed to create program");
+      return;
+    }
+    gl.clearColor(0, 0, 0, 0);
+    gl.useProgram(program);
+
+    const positionBuffer = gl.createBuffer();
+
+    const draw = async () => {
+      if (!this.canvas) return;
+
+      this.frameStats = { drawCalls: 0, vertices: 0 };
+      stats.begin();
+
+      const matrixLocation = gl.getUniformLocation(program, "u_matrix");
+      gl.uniformMatrix3fv(matrixLocation, false, this.matrix);
+
+      this.tilesInView.forEach((tile) => {
+        if (!this.canvas) return;
+
+        const tileData = this.tiles[tile.join("/")];
+
+        (tileData || []).forEach((tileLayer) => {
+          const { layer, vertices } = tileLayer;
+
+          if (LAYERS[layer as keyof typeof LAYERS]) {
+            const color = LAYERS[layer as keyof typeof LAYERS].map(
+              (n) => n / 255
+            );
+
+            const colorLocation = gl.getUniformLocation(program, "u_color");
+            gl.uniform4fv(colorLocation, color);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+            const positionAttributeLocation = gl.getAttribLocation(
+              program,
+              "a_position"
+            );
+            gl.enableVertexAttribArray(positionAttributeLocation);
+
+            const size = 2;
+            const type = gl.FLOAT;
+            const normalize = false;
+            const stride = 0;
+            let offset = 0;
+            gl.vertexAttribPointer(
+              positionAttributeLocation,
+              size,
+              type,
+              normalize,
+              stride,
+              offset
+            );
+
+            const primitiveType = gl.TRIANGLES;
+            offset = 0;
+            const count = vertices.length / 2;
+            gl.drawArrays(primitiveType, offset, count);
+
+            this.frameStats.drawCalls++;
+            this.frameStats.vertices += vertices.length;
+          }
+        });
+      });
+
+      // await this.updateTiles(this.canvas, this.camera);
+
+      // Object.keys(this.tiles).forEach((tile) => {
+      //   (this.tiles[tile] as any[]).forEach((tileLayer) => {
+      //     const { layer, vertices } = tileLayer;
+
+      //     if (LAYERS[layer as keyof typeof LAYERS]) {
+      //       // RGBA to WebGL color
+      //       const color = LAYERS[layer as keyof typeof LAYERS].map(
+      //         (n) => n / 255
+      //       );
+
+      //       const colorLocation = gl.getUniformLocation(program, "u_color");
+      //       gl.uniform4fv(colorLocation, color);
+
+      //       gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+      //       gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+      //       const positionAttributeLocation = gl.getAttribLocation(
+      //         program,
+      //         "a_position"
+      //       );
+      //       gl.enableVertexAttribArray(positionAttributeLocation);
+
+      //       const size = 2;
+      //       const type = gl.FLOAT;
+      //       const normalize = false;
+      //       const stride = 0;
+      //       let offset = 0;
+      //       gl.vertexAttribPointer(
+      //         positionAttributeLocation,
+      //         size,
+      //         type,
+      //         normalize,
+      //         stride,
+      //         offset
+      //       );
+
+      //       const primitiveType = gl.TRIANGLES;
+      //       offset = 0;
+      //       const count = vertices.length / 2;
+      //       gl.drawArrays(primitiveType, offset, count);
+
+      //       this.frameStats.drawCalls++;
+      //       this.frameStats.vertices += vertices.length;
+      //     }
+      //   });
+      // });
+
+      this.overlay?.replaceChildren();
+
+      this.tilesInView.forEach((tile) => {
+        if (!this.canvas) return;
+
+        const colorLocation = gl.getUniformLocation(program, "u_color");
+        gl.uniform4fv(colorLocation, [1, 0, 0, 1]);
+
+        const tileVertices = geometryToVertices(tilebelt.tileToGeoJSON(tile));
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, tileVertices, gl.STATIC_DRAW);
+
+        const positionAttributeLocation = gl.getAttribLocation(
+          program,
+          "a_position"
+        );
+        gl.enableVertexAttribArray(positionAttributeLocation);
+
+        const size = 2;
+        const type = gl.FLOAT;
+        const normalize = false;
+        const stride = 0;
+        let offset = 0;
+        gl.vertexAttribPointer(
+          positionAttributeLocation,
+          size,
+          type,
+          normalize,
+          stride,
+          offset
+        );
+
+        const primitiveType = gl.LINES;
+        offset = 0;
+        const count = tileVertices.length / 2;
+        gl.drawArrays(primitiveType, offset, count);
+
+        // draw tile labels
+        const tileCoordinates = (tilebelt.tileToGeoJSON(tile) as any)
+          .coordinates;
+        const topLeft = tileCoordinates[0][0];
+        const [x, y] = MercatorCoordinate.fromLngLat(
+          topLeft as [number, number]
+        );
+
+        const [clipX, clipY] = vec3.transformMat3(
+          [] as unknown as vec3,
+          [x, y, 1],
+          this.matrix
+        );
+
+        const wx = ((1 + clipX) / 2) * this.canvas.width;
+        const wy = ((1 - clipY) / 2) * this.canvas.height;
+        const div = document.createElement("div");
+        div.className = "tile-label";
+        div.style.left = `${wx + 8}px`;
+        div.style.top = `${wy + 8}px`;
+        div.style.position = "absolute";
+        div.style.zIndex = "1000";
+        div.appendChild(document.createTextNode(tile.join("/")));
+        this.overlay?.appendChild(div);
+      });
+
+      const now = performance.now();
+      const fps = 1 / ((now - this.timestamp) / 1000);
+      if (fps < 10) {
+        this.slowCount++;
+
+        if (this.slowCount > 10) {
+          console.warn(`Too slow. Killing loop for ${canvasId}.`);
+          this.stop(this.canvas, this.statsWidget);
+          if (abort) {
+            abort();
+          }
+        }
+      }
+      this.timestamp = now;
+
+      stats.end();
+      if (this.loopRunning) {
+        window.requestAnimationFrame(draw);
+      }
+    };
+    // start loop
+    window.requestAnimationFrame(draw);
+
+    this.hammer = new Hammer(this.canvas);
+    this.hammer.get("pan").set({ direction: Hammer.DIRECTION_ALL });
+    this.hammer.get("pinch").set({ enable: true });
+
+    this.canvas.addEventListener("mousedown", this.handlePan.bind(this));
+    this.hammer.on("panstart", this.handlePan.bind(this));
+
+    this.canvas.addEventListener("wheel", this.handleZoom.bind(this));
+    this.hammer.on("pinch", this.handleZoom.bind(this));
+
+    // setup stats widget
+    stats.showPanel(0);
+    this.statsWidget = stats.dom;
+    this.statsWidget.style.position = "absolute";
+    this.statsWidget.style.zIndex = "0";
+    this.canvas.parentElement?.appendChild(this.statsWidget);
+  }
+
+  public stop(
+    canvas: HTMLCanvasElement | null,
+    statsWidget: HTMLElement | null
+  ) {
+    this.loopRunning = false;
+
+    if (!canvas) return;
+    if (!statsWidget) return;
+
+    canvas.removeEventListener("wheel", this.handleZoom.bind(this));
+    canvas.removeEventListener("mousedown", this.handlePan.bind(this));
+    this.overlay?.replaceChildren();
+    statsWidget.remove();
   }
 
   private async handleMove(moveEvent: MouseEvent | HammerInput) {
@@ -355,293 +631,6 @@ class CreateMap {
     this.updateMatrix();
 
     await this.updateTiles(this.canvas, this.camera);
-  }
-
-  public async run(
-    canvasId: string,
-    mobile: boolean = false,
-    abort: (() => void) | null = null
-  ) {
-    this.loopRunning = true;
-    this.timestamp = 0;
-    this.slowCount = 0;
-
-    const stats = new Stats();
-
-    this.canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
-    if (!this.canvas) {
-      throw new Error(`No canvas element with id ${canvasId}`);
-    }
-
-    const gl = this.canvas.getContext("webgl");
-    if (!gl) {
-      throw new Error("No WebGL context found");
-    }
-
-    window.addEventListener("resize", this.resizeCanvas.bind(this));
-    this.resizeCanvas();
-
-    this.addAttribution();
-
-    this.overlay = document.getElementById(`${canvasId}-overlay`);
-
-    this.updateMatrix();
-
-    await this.updateTiles(this.canvas, this.camera);
-
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-
-    const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
-    const fragmentShader = createShader(
-      gl,
-      gl.FRAGMENT_SHADER,
-      fragmentShaderSource
-    );
-
-    if (!vertexShader || !fragmentShader) {
-      console.error("Failed to create shaders");
-      return;
-    }
-    const program = createProgram(gl, vertexShader, fragmentShader);
-    if (!program) {
-      console.error("Failed to create program");
-      return;
-    }
-    gl.clearColor(0, 0, 0, 0);
-    gl.useProgram(program);
-
-    const positionBuffer = gl.createBuffer();
-
-    const draw = async () => {
-      if (!this.canvas) return;
-
-      this.frameStats = { drawCalls: 0, vertices: 0, features: 0 };
-      stats.begin();
-
-      const matrixLocation = gl.getUniformLocation(program, "u_matrix");
-      gl.uniformMatrix3fv(matrixLocation, false, this.matrix);
-
-      this.tilesInView.forEach((tile) => {
-        if (!this.canvas) return;
-
-        let data: any = this.tileData[tile.join("/")];
-
-        if (data?.length === 0) {
-          data = this.getPlaceholderTile(tile);
-        }
-
-        (data || []).forEach((tileLayer: any) => {
-          const { layer, vertices } = tileLayer;
-
-          if (LAYERS[layer as keyof typeof LAYERS]) {
-            const color = LAYERS[layer as keyof typeof LAYERS].map(
-              (n) => n / 255
-            );
-
-            const colorLocation = gl.getUniformLocation(program, "u_color");
-            gl.uniform4fv(colorLocation, color);
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-            const positionAttributeLocation = gl.getAttribLocation(
-              program,
-              "a_position"
-            );
-            gl.enableVertexAttribArray(positionAttributeLocation);
-
-            const size = 2;
-            const type = gl.FLOAT;
-            const normalize = false;
-            const stride = 0;
-            let offset = 0;
-            gl.vertexAttribPointer(
-              positionAttributeLocation,
-              size,
-              type,
-              normalize,
-              stride,
-              offset
-            );
-
-            const primitiveType = gl.TRIANGLES;
-            offset = 0;
-            const count = vertices.length / 2;
-            gl.drawArrays(primitiveType, offset, count);
-
-            this.frameStats.drawCalls++;
-            this.frameStats.vertices += vertices.length;
-          }
-        });
-      });
-
-      await this.updateTiles(this.canvas, this.camera);
-
-      Object.keys(this.tileData).forEach((tile) => {
-        (this.tileData[tile] as any[]).forEach((tileLayer) => {
-          const { layer, vertices } = tileLayer;
-
-          if (LAYERS[layer as keyof typeof LAYERS]) {
-            // RGBA to WebGL color
-            const color = LAYERS[layer as keyof typeof LAYERS].map(
-              (n) => n / 255
-            );
-
-            const colorLocation = gl.getUniformLocation(program, "u_color");
-            gl.uniform4fv(colorLocation, color);
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-            const positionAttributeLocation = gl.getAttribLocation(
-              program,
-              "a_position"
-            );
-            gl.enableVertexAttribArray(positionAttributeLocation);
-
-            const size = 2;
-            const type = gl.FLOAT;
-            const normalize = false;
-            const stride = 0;
-            let offset = 0;
-            gl.vertexAttribPointer(
-              positionAttributeLocation,
-              size,
-              type,
-              normalize,
-              stride,
-              offset
-            );
-
-            const primitiveType = gl.TRIANGLES;
-            offset = 0;
-            const count = vertices.length / 2;
-            gl.drawArrays(primitiveType, offset, count);
-
-            this.frameStats.drawCalls++;
-            this.frameStats.vertices += vertices.length;
-          }
-        });
-      });
-
-      this.overlay?.replaceChildren();
-
-      this.tilesInView.forEach((tile) => {
-        if (!this.canvas) return;
-
-        const colorLocation = gl.getUniformLocation(program, "u_color");
-        gl.uniform4fv(colorLocation, [1, 0, 0, 1]);
-
-        const tileVertices = geometryToVertices(tilebelt.tileToGeoJSON(tile));
-        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, tileVertices, gl.STATIC_DRAW);
-
-        const positionAttributeLocation = gl.getAttribLocation(
-          program,
-          "a_position"
-        );
-        gl.enableVertexAttribArray(positionAttributeLocation);
-
-        const size = 2;
-        const type = gl.FLOAT;
-        const normalize = false;
-        const stride = 0;
-        let offset = 0;
-        gl.vertexAttribPointer(
-          positionAttributeLocation,
-          size,
-          type,
-          normalize,
-          stride,
-          offset
-        );
-
-        const primitiveType = gl.LINES;
-        offset = 0;
-        const count = tileVertices.length / 2;
-        gl.drawArrays(primitiveType, offset, count);
-
-        // draw tile labels
-        const tileCoordinates = (
-          tilebelt.tileToGeoJSON(tile as unknown as tilebelt.Tile) as any
-        ).coordinates;
-        const topLeft = tileCoordinates[0][0];
-        const [x, y] = MercatorCoordinate.fromLngLat(
-          topLeft as [number, number]
-        );
-
-        const [clipX, clipY] = vec3.transformMat3(
-          [] as unknown as vec3,
-          [x, y, 1],
-          this.matrix
-        );
-
-        const wx = ((1 + clipX) / 2) * this.canvas.width;
-        const wy = ((1 - clipY) / 2) * this.canvas.height;
-        const div = document.createElement("div");
-        div.className = "tile-label";
-        div.style.left = `${wx + 8}px`;
-        div.style.top = `${wy + 8}px`;
-        div.style.position = "absolute";
-        div.style.zIndex = "1000";
-        div.appendChild(document.createTextNode(tile.join("/")));
-        this.overlay?.appendChild(div);
-      });
-
-      const now = performance.now();
-      const fps = 1 / ((now - this.timestamp) / 1000);
-      if (fps < 10) {
-        this.slowCount++;
-
-        if (this.slowCount > 10) {
-          console.warn(`Too slow. Killing loop for ${canvasId}.`);
-          this.stop(this.canvas, this.statsWidget);
-          if (abort) {
-            abort();
-          }
-        }
-      }
-      this.timestamp = now;
-
-      stats.end();
-      if (this.loopRunning) {
-        window.requestAnimationFrame(draw);
-      }
-    };
-    // start loop
-    window.requestAnimationFrame(draw);
-
-    this.hammer = new Hammer(this.canvas);
-    this.hammer.get("pan").set({ direction: Hammer.DIRECTION_ALL });
-    this.hammer.get("pinch").set({ enable: true });
-
-    this.canvas.addEventListener("mousedown", this.handlePan.bind(this));
-    this.hammer.on("panstart", this.handlePan.bind(this));
-
-    this.canvas.addEventListener("wheel", this.handleZoom.bind(this));
-    this.hammer.on("pinch", this.handleZoom.bind(this));
-
-    // setup stats widget
-    stats.showPanel(0);
-    this.statsWidget = stats.dom;
-    this.statsWidget.style.position = "absolute";
-    this.statsWidget.style.zIndex = "0";
-    this.canvas.parentElement?.appendChild(this.statsWidget);
-  }
-
-  public stop(
-    canvas: HTMLCanvasElement | null,
-    statsWidget: HTMLElement | null
-  ) {
-    this.loopRunning = false;
-
-    if (!canvas) return;
-    if (!statsWidget) return;
-
-    canvas.removeEventListener("wheel", this.handleZoom.bind(this));
-    canvas.removeEventListener("mousedown", this.handlePan.bind(this));
-    this.overlay?.replaceChildren();
-    statsWidget.remove();
   }
 }
 

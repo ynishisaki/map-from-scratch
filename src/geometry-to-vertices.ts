@@ -30,7 +30,7 @@ export default function geometryToVertices(geometry: Geometry) {
     const positions: Float32Array[] = [];
     geometry.coordinates.forEach((polygon, i) => {
       const coordinates = [polygon[0]];
-      const vertices = verticesFromPolygon(coordinates, i);
+      const vertices = verticesFromPolygon(coordinates);
       vertices.forEach((vertex) => {
         positions[positions.length] = vertex as any;
       });

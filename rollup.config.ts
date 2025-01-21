@@ -4,6 +4,7 @@ import resolve from "@rollup/plugin-node-resolve";
 import replace from "@rollup/plugin-replace";
 import typescript from "@rollup/plugin-typescript";
 import dotenv from "dotenv";
+import { InputPluginOption, RollupOptions } from "rollup";
 import nodePolyfills from "rollup-plugin-node-polyfills";
 
 dotenv.config();
@@ -11,10 +12,14 @@ dotenv.config();
 const TILE_BASE_URL = process.env.TILE_BASE_URL || "";
 
 const config = {
-  input: "src/script.ts",
+  input: {
+    main: "src/main.ts",
+    "tile-worker": "src/tile-worker.ts",
+  },
   output: {
-    file: "dist/bundle.mjs",
     format: "es",
+    dir: "dist",
+    entryFileNames: "[name].js",
   },
   plugins: [
     resolve({
@@ -24,7 +29,7 @@ const config = {
     commonjs(),
     typescript(),
     json(),
-    nodePolyfills(),
+    nodePolyfills() as InputPluginOption,
     replace({
       preventAssignment: true,
       values: {
@@ -32,6 +37,6 @@ const config = {
       },
     }),
   ],
-};
+} satisfies RollupOptions;
 
 export default config;

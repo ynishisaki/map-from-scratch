@@ -2,6 +2,7 @@ import { VectorTile } from "@mapbox/vector-tile";
 import axios from "axios";
 import Protobuf from "pbf";
 import geometryToVertices from "./geometry-to-vertices";
+import { TileLayerData } from "./type";
 
 type FetchTile = {
   tile: string;
@@ -18,7 +19,7 @@ export const fetchTile = async ({ tile, layers, url }: FetchTile) => {
   const pbf = new Protobuf(res.data);
   const vectorTile = new VectorTile(pbf);
 
-  const tileData: { layer: string; vertices: Float32Array }[] = [];
+  const tileData: TileLayerData = [];
   Object.keys(layers).forEach((layer) => {
     if (vectorTile?.layers?.[layer]) {
       const numFeatures = vectorTile.layers[layer]?._features?.length || 0;
@@ -26,7 +27,7 @@ export const fetchTile = async ({ tile, layers, url }: FetchTile) => {
       const vertices = [];
       for (let i = 0; i < numFeatures; i++) {
         const geojson = vectorTile.layers[layer].feature(i).toGeoJSON(x, y, z);
-        vertices.push(geometryToVertices(geojson.geometry));
+        vertices.push(...geometryToVertices(geojson.geometry));
       }
       tileData.push({ layer, vertices: Float32Array.from(vertices) });
     }
