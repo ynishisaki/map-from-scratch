@@ -1,4 +1,4 @@
-import { TILE_SIZE } from "./constants";
+import { TILE_BBOX, TILE_SIZE } from "./constants";
 import MercatorCoordinate from "./mercator-coordinate";
 
 type Camera = {
@@ -30,10 +30,10 @@ export default function getBounds(canvas: HTMLCanvasElement, camera: Camera) {
   y2 = y2 / zoomScale / TILE_SIZE;
 
   const bbox = [
-    Math.max(MercatorCoordinate.lngFromMercatorX(x1), -180), // left
-    Math.max(MercatorCoordinate.latFromMercatorY(y1), -85.05), // bottom
-    Math.min(MercatorCoordinate.lngFromMercatorX(x2), 180), // right
-    Math.min(MercatorCoordinate.latFromMercatorY(y2), 85.05), // top
+    Math.max(MercatorCoordinate.lngFromMercatorX(x1), TILE_BBOX[0]), // left
+    Math.max(MercatorCoordinate.latFromMercatorY(y1), TILE_BBOX[1]), // bottom
+    Math.min(MercatorCoordinate.lngFromMercatorX(x2), TILE_BBOX[2]), // right
+    Math.min(MercatorCoordinate.latFromMercatorY(y2), TILE_BBOX[3]), // top
   ];
 
   return bbox;

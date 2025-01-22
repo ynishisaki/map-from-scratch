@@ -171,10 +171,9 @@ class CreateMap {
     tilesToLoad.forEach(async (tile) => {
       if (this.tiles[tile]) {
         return;
-      } else {
-        this.tiles[tile] = [];
       }
 
+      this.tiles[tile] = [];
       try {
         if (inView.includes(tile)) {
           const tileData = await fetchTile({
@@ -273,12 +272,13 @@ class CreateMap {
       console.error("Uncaught worker error.", error);
     };
 
+    window.addEventListener("resize", this.resizeCanvas.bind(this));
+    this.resizeCanvas();
+
     this.updateMatrix();
     await this.updateTiles(this.canvas, this.camera);
 
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-    window.addEventListener("resize", this.resizeCanvas.bind(this));
-    this.resizeCanvas();
 
     const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
     const fragmentShader = createShader(
@@ -313,9 +313,13 @@ class CreateMap {
       this.tilesInView.forEach((tile) => {
         if (!this.canvas) return;
 
-        const tileData = this.tiles[tile.join("/")];
+        let tileData: any = this.tiles[tile.join("/")];
 
-        (tileData || []).forEach((tileLayer) => {
+        if (tileData?.length === 0) {
+          tileData = this.getPlaceholderTile(tile);
+        }
+
+        (tileData || []).forEach((tileLayer: any) => {
           const { layer, vertices } = tileLayer;
 
           if (LAYERS[layer as keyof typeof LAYERS]) {
@@ -359,55 +363,6 @@ class CreateMap {
           }
         });
       });
-
-      // await this.updateTiles(this.canvas, this.camera);
-
-      // Object.keys(this.tiles).forEach((tile) => {
-      //   (this.tiles[tile] as any[]).forEach((tileLayer) => {
-      //     const { layer, vertices } = tileLayer;
-
-      //     if (LAYERS[layer as keyof typeof LAYERS]) {
-      //       // RGBA to WebGL color
-      //       const color = LAYERS[layer as keyof typeof LAYERS].map(
-      //         (n) => n / 255
-      //       );
-
-      //       const colorLocation = gl.getUniformLocation(program, "u_color");
-      //       gl.uniform4fv(colorLocation, color);
-
-      //       gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-      //       gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-      //       const positionAttributeLocation = gl.getAttribLocation(
-      //         program,
-      //         "a_position"
-      //       );
-      //       gl.enableVertexAttribArray(positionAttributeLocation);
-
-      //       const size = 2;
-      //       const type = gl.FLOAT;
-      //       const normalize = false;
-      //       const stride = 0;
-      //       let offset = 0;
-      //       gl.vertexAttribPointer(
-      //         positionAttributeLocation,
-      //         size,
-      //         type,
-      //         normalize,
-      //         stride,
-      //         offset
-      //       );
-
-      //       const primitiveType = gl.TRIANGLES;
-      //       offset = 0;
-      //       const count = vertices.length / 2;
-      //       gl.drawArrays(primitiveType, offset, count);
-
-      //       this.frameStats.drawCalls++;
-      //       this.frameStats.vertices += vertices.length;
-      //     }
-      //   });
-      // });
 
       this.overlay?.replaceChildren();
 
