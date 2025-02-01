@@ -44,7 +44,7 @@ const fragmentShaderSource = `
   }
 `;
 
-class CreateMap {
+export default class CreateMap {
   private camera: Camera;
   private cacheStats: { cacheHits: number; tilesLoaded: number };
   private tiles: TileData;
@@ -588,6 +588,3 @@ class CreateMap {
     await this.updateTiles(this.canvas, this.camera);
   }
 }
-
-const map = new CreateMap();
-map.run("canvas", false, () => {});
