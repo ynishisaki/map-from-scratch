@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "rimraf dist && rollup --config rollup.config.ts --configPlugin esbuild"
+    "build": "rimraf dist examples/dist&& rollup --config rollup.config.ts --configPlugin esbuild && cp -r dist examples/dist"
   },
   "keywords": [],
   "author": "",
