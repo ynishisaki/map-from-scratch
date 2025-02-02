@@ -12,14 +12,10 @@ dotenv.config();
 const TILE_BASE_URL = process.env.TILE_BASE_URL || "";
 
 const config = {
-  input: {
-    main: "src/main.ts",
-    "tile-worker": "src/tile-worker.ts",
-  },
+  input: ["src/index.ts", "src/source/worker.ts"],
   output: {
     format: "es",
     dir: "dist",
-    entryFileNames: "[name].js",
   },
   plugins: [
     resolve({

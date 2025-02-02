@@ -1,8 +1,8 @@
 import { VectorTile } from "@mapbox/vector-tile";
 import axios from "axios";
 import Protobuf from "pbf";
-import geometryToVertices from "./geometry-to-vertices";
-import { TileLayerData } from "./type";
+import geometryToVertices from "../ui/geometry-to-vertices";
+import { TileLayerData } from "../ui/type";
 
 type FetchTile = {
   tile: string;

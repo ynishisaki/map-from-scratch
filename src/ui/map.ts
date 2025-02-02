@@ -2,6 +2,7 @@ import * as tilebelt from "@mapbox/tilebelt";
 import { mat3, vec3 } from "gl-matrix";
 import Hammer from "hammerjs";
 import Stats from "stats.js";
+import fetchTile from "../source/fetch-tile";
 import atLimits from "./at-limites";
 import {
   INITIAL_SETTINGS,
@@ -15,7 +16,6 @@ import {
   TILE_SIZE,
   TILE_URL,
 } from "./constants";
-import fetchTile from "./fetch-tile";
 import geometryToVertices from "./geometry-to-vertices";
 import getBounds from "./get-bounds";
 import getClipSpacePosition from "./get-clip-space-position";
@@ -44,7 +44,13 @@ const fragmentShaderSource = `
   }
 `;
 
-export default class CreateMap {
+export type MapOptions = {
+  container: HTMLElement | string;
+  center?: [number, number];
+  zoom?: number;
+};
+
+export class Map {
   private camera: Camera;
   private cacheStats: { cacheHits: number; tilesLoaded: number };
   private tiles: TileData;
@@ -65,16 +71,42 @@ export default class CreateMap {
   private overlay: HTMLElement | null;
   private statsWidget: HTMLElement | null;
 
-  constructor() {
-    const [initialX, initialY] = MercatorCoordinate.fromLngLat([
-      ...INITIAL_SETTINGS.lnglat,
-    ]);
-    this.camera = { x: initialX, y: initialY, zoom: INITIAL_SETTINGS.zoom };
+  constructor(options: MapOptions) {
+    const resolvedOptions: Required<MapOptions> = {
+      center: [0, 0],
+      zoom: 0,
+      ...options,
+    };
+
+    const [initialX, initialY] = MercatorCoordinate.fromLngLat(
+      resolvedOptions.center
+    );
+    this.camera = { x: initialX, y: initialY, zoom: resolvedOptions.zoom };
+
+    if (typeof resolvedOptions.container === "string") {
+      this.canvas = document.getElementById(
+        resolvedOptions.container
+      ) as HTMLCanvasElement | null;
+      if (!this.canvas) {
+        throw new Error(`Container '${resolvedOptions.container}' not found.`);
+      }
+    } else if (resolvedOptions.container instanceof HTMLElement) {
+      this.canvas = resolvedOptions.container.querySelector("canvas");
+      if (!this.canvas) {
+        throw new Error(
+          "Invalid type: 'container' must be a String or HTMLElement."
+        );
+      }
+    } else {
+      throw new Error(
+        "Invalid type: 'container' must be a String or HTMLElement."
+      );
+    }
 
     this.cacheStats = { cacheHits: 0, tilesLoaded: 0 };
     this.tiles = {};
     this.tilesInView = [];
-    this.tileWorker = new Worker(new URL("tile-worker.js", import.meta.url), {
+    this.tileWorker = new Worker(new URL("worker.js", import.meta.url), {
       type: "module",
     });
     this.matrix = mat3.create();
@@ -83,7 +115,7 @@ export default class CreateMap {
     this.frameStats = { drawCalls: 0, vertices: 0 };
     this.startX = 0;
     this.startY = 0;
-    this.canvas = null;
+
     this.hammer = null;
     this.loopRunning = true;
     this.overlay = null;
@@ -250,10 +282,10 @@ export default class CreateMap {
 
     const stats = new Stats();
 
-    this.canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
-    if (!this.canvas) {
-      throw new Error(`No canvas element with id ${canvasId}`);
-    }
+    // this.canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+    // if (!this.canvas) {
+    //   throw new Error(`No canvas element with id ${canvasId}`);
+    // }
 
     const gl = this.canvas.getContext("webgl");
     if (!gl) {

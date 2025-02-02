@@ -31,7 +31,7 @@
         "
       ></div>
       <canvas
-        id="canvas"
+        id="map"
         style="
           border: 1px solid black;
           position: absolute;
@@ -48,9 +48,13 @@
     </div>
   </body>
   <script type="module">
-    import CreateMap from "./dist/main.js";
+    import { Map } from "./dist/index.js";
 
-    const map = new CreateMap();
+    const map = new Map({
+      container: "map",
+      center: [139.763275, 35.638126],
+      zoom: 10,
+    });
     map.run("canvas", false, () => {});
   </script>
 </html>
