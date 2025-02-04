@@ -17,35 +17,19 @@
     </style>
   </head>
   <body>
-    <div id="canvas-wrapper">
-      <div
-        id="canvas-overlay"
-        style="
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          color: red;
-          overflow: hidden;
-        "
-      ></div>
-      <canvas
-        id="map"
-        style="
-          border: 1px solid black;
-          position: absolute;
-          top: 0px;
-          left: 0px;
-          width: 100%;
-          height: 100%;
-          touch-action: none;
-          user-select: none;
-          -webkit-user-drag: none;
-          -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
-        "
-      ></canvas>
-    </div>
+    <div
+      id="canvas-overlay"
+      style="
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        color: red;
+        overflow: hidden;
+      "
+    ></div>
+    <div id="map"></div>
   </body>
   <script type="module">
     import { Map } from "./dist/index.js";
@@ -55,6 +39,6 @@
       center: [139.763275, 35.638126],
       zoom: 10,
     });
-    map.run("canvas", false, () => {});
+    map.run("canvas");
   </script>
 </html>

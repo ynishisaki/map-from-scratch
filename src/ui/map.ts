@@ -52,7 +52,8 @@ export type MapOptions = {
 
 export class Map {
   private camera: Camera;
-  private cacheStats: { cacheHits: number; tilesLoaded: number };
+  private container: HTMLElement | null;
+  private canvas: HTMLCanvasElement;
   private tiles: TileData;
   private tilesInView: tilebelt.Tile[];
   private tileWorker: Worker;
@@ -65,7 +66,6 @@ export class Map {
   };
   private startX: number;
   private startY: number;
-  private canvas: HTMLCanvasElement | null;
   private hammer: HammerManager | null;
   private loopRunning: boolean;
   private overlay: HTMLElement | null;
@@ -83,27 +83,10 @@ export class Map {
     );
     this.camera = { x: initialX, y: initialY, zoom: resolvedOptions.zoom };
 
-    if (typeof resolvedOptions.container === "string") {
-      this.canvas = document.getElementById(
-        resolvedOptions.container
-      ) as HTMLCanvasElement | null;
-      if (!this.canvas) {
-        throw new Error(`Container '${resolvedOptions.container}' not found.`);
-      }
-    } else if (resolvedOptions.container instanceof HTMLElement) {
-      this.canvas = resolvedOptions.container.querySelector("canvas");
-      if (!this.canvas) {
-        throw new Error(
-          "Invalid type: 'container' must be a String or HTMLElement."
-        );
-      }
-    } else {
-      throw new Error(
-        "Invalid type: 'container' must be a String or HTMLElement."
-      );
-    }
+    this.container = this.setContaier(resolvedOptions.container);
+    this.canvas = this.createCanvas(this.container);
+    this.createAttribution();
 
-    this.cacheStats = { cacheHits: 0, tilesLoaded: 0 };
     this.tiles = {};
     this.tilesInView = [];
     this.tileWorker = new Worker(new URL("worker.js", import.meta.url), {
@@ -120,9 +103,55 @@ export class Map {
     this.loopRunning = true;
     this.overlay = null;
     this.statsWidget = null;
+
+    this.run(this.canvas.id);
   }
 
-  private addAttribution() {
+  private setContaier(container: HTMLElement | string) {
+    let _container: HTMLElement | null;
+    if (typeof container === "string") {
+      _container = document.getElementById(container);
+      if (!_container) {
+        throw new Error(`Container '${container}' not found.`);
+      }
+    } else if (container instanceof HTMLElement) {
+      _container = container;
+      if (!_container) {
+        throw new Error(
+          "Invalid type: 'container' must be a String or HTMLElement."
+        );
+      }
+    } else {
+      throw new Error(
+        "Invalid type: 'container' must be a String or HTMLElement."
+      );
+    }
+
+    return _container;
+  }
+
+  private createCanvas(container: HTMLElement) {
+    const canvasContainer = document.createElement("div");
+    canvasContainer.id = "canvas-container";
+    canvasContainer.style.width = "100%";
+    canvasContainer.style.height = "100%";
+    container.appendChild(canvasContainer);
+
+    const canvas = document.createElement("canvas");
+    canvas.id = "canvas";
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.position = "absolute";
+    canvasContainer.appendChild(canvas);
+
+    return canvas;
+  }
+
+  private createAttribution() {
+    const attributionContainer = document.createElement("div");
+    attributionContainer.id = "attribution-container";
+    this.container?.appendChild(attributionContainer);
+
     const attribution = document.createElement("div");
     attribution.className = "attribution";
     attribution.innerHTML = TILE_ATTRIBUTION;
@@ -131,8 +160,7 @@ export class Map {
     attribution.style.right = "0";
     attribution.style.backgroundColor = "white";
     attribution.style.padding = "4px";
-
-    document.getElementById("canvas-wrapper")?.appendChild(attribution);
+    attributionContainer.appendChild(attribution);
   }
 
   private resizeCanvas() {
@@ -271,10 +299,10 @@ export class Map {
     );
   }
 
-  public async run(
-    canvasId: string,
-    mobile: boolean = false,
-    abort: (() => void) | null = null
+  private async run(
+    canvasId: string
+    // mobile: boolean = false,
+    // abort: (() => void) | null = null
   ) {
     this.loopRunning = true;
     this.timestamp = 0;
@@ -291,8 +319,6 @@ export class Map {
     if (!gl) {
       throw new Error("No WebGL context found");
     }
-
-    this.addAttribution();
 
     this.overlay = document.getElementById(`${canvasId}-overlay`);
 
@@ -331,7 +357,13 @@ export class Map {
     gl.clearColor(0, 0, 0, 0);
     gl.useProgram(program);
 
+    const matrixLocation = gl.getUniformLocation(program, "u_matrix");
+    const colorLocation = gl.getUniformLocation(program, "u_color");
     const positionBuffer = gl.createBuffer();
+    const positionAttributeLocation = gl.getAttribLocation(
+      program,
+      "a_position"
+    );
 
     const draw = async () => {
       if (!this.canvas) return;
@@ -339,7 +371,8 @@ export class Map {
       this.frameStats = { drawCalls: 0, vertices: 0 };
       stats.begin();
 
-      const matrixLocation = gl.getUniformLocation(program, "u_matrix");
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(program);
       gl.uniformMatrix3fv(matrixLocation, false, this.matrix);
 
       this.tilesInView.forEach((tile) => {
@@ -359,16 +392,11 @@ export class Map {
               (n) => n / 255
             );
 
-            const colorLocation = gl.getUniformLocation(program, "u_color");
             gl.uniform4fv(colorLocation, color);
 
             gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
-            const positionAttributeLocation = gl.getAttribLocation(
-              program,
-              "a_position"
-            );
             gl.enableVertexAttribArray(positionAttributeLocation);
 
             const size = 2;
@@ -467,9 +495,9 @@ export class Map {
         if (this.slowCount > 10) {
           console.warn(`Too slow. Killing loop for ${canvasId}.`);
           this.stop(this.canvas, this.statsWidget);
-          if (abort) {
-            abort();
-          }
+          // if (abort) {
+          //   abort();
+          // }
         }
       }
       this.timestamp = now;
